@@ -12,7 +12,7 @@
 | `MediaEdits.kt` | Изменение локальных аудиофайлов через Android MediaStore. |
 | `VideoModule.kt`, `VideoStore.kt`, `VideoPlayerActivity.kt` | Видеомедиатека, просмотр и жесты. |
 | `VideoPlaylistStore.kt`, `VideoHistoryStore.kt`, `VideoMediaManager.kt` | Видеоплейлисты, история и файловые операции. |
-| `YandexMusic.kt`, `MusicRepository.kt`, `Http.kt` | Недокументированный API Яндекс Музыки и сетевые запросы. |
+| `YandexMusic.kt`, `MusicRepository.kt`, `Http.kt` | Неофициальный клиент Яндекс Музыки и сетевые запросы; основа — [vladimir120307-droid/yandex-music-downloader](https://github.com/vladimir120307-droid/yandex-music-downloader). |
 | `Downloader.kt`, `FlacRemux.kt`, `Id3.kt`, `Crypto.kt` | Получение и сохранение аудиофайлов, контейнеры и теги. |
 | `TokenStore.kt` | Шифрование OAuth-токена ключом Android Keystore. |
 | `ThemePalette.kt`, `AppPreferences.kt`, `SavedQueueStore.kt` | Тема, настройки модулей и сохранение очереди. |
