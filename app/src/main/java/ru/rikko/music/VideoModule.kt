@@ -95,6 +95,7 @@ object VideoModule {
         var target by remember { mutableStateOf<VideoDestination?>(null) }
         var playlistPicker by remember { mutableStateOf<List<LocalVideo>?>(null) }
         var pendingWrite by remember { mutableStateOf<Pair<List<VideoEdit>, String>?>(null) }
+        var failedWrite by remember { mutableStateOf<Pair<List<VideoEdit>, String>?>(null) }
         var detail by remember { mutableStateOf<LocalVideo?>(null) }
         var newPlaylistItems by remember { mutableStateOf<List<String>>(emptyList()) }
         var pendingPlaylistDelete by remember { mutableStateOf<String?>(null) }
@@ -117,10 +118,11 @@ object VideoModule {
             pendingWrite = null
             if (result.resultCode == Activity.RESULT_OK && operation != null) {
                 scope.launch {
-                    val result = withContext(Dispatchers.IO) { runCatching {
-                        operation.first.count { edit -> context.contentResolver.update(edit.uri, edit.values(), null, null) > 0 }
-                    } }
-                    error = result.fold({ "${operation.second}: $it файлов" }, { it.localizedMessage ?: "Не удалось изменить видео" })
+                    val report = withContext(Dispatchers.IO) { VideoMediaManager.applyEdits(context, operation.first) }
+                    failedWrite = if (report.failed.isEmpty()) null else report.failed to operation.second
+                    error = "${operation.second}: ${report.changed} из ${operation.first.size}" +
+                        if (report.failed.isEmpty()) "" else ". Не изменено: " +
+                            report.failed.take(3).joinToString { it.name ?: it.uri.lastPathSegment ?: "видео" }
                     selectedUris = emptySet()
                     refresh++
                 }
@@ -135,16 +137,21 @@ object VideoModule {
         }
         fun write(edits: List<VideoEdit>, label: String) {
             if (edits.isEmpty()) { error = "В папке нет видео"; return }
+            if (edits.map { it.uri }.distinct().size != edits.size) {
+                error = "Одно видео попало в операцию несколько раз"; return
+            }
+            failedWrite = null
             try {
                 if (Build.VERSION.SDK_INT >= 30) {
                     pendingWrite = edits to label
                     val request = MediaStore.createWriteRequest(context.contentResolver, edits.map { it.uri }.distinct())
                     writeLauncher.launch(IntentSenderRequest.Builder(request.intentSender).build())
                 } else scope.launch {
-                    val result = withContext(Dispatchers.IO) { runCatching {
-                        edits.count { context.contentResolver.update(it.uri, it.values(), null, null) > 0 }
-                    } }
-                    error = result.fold({ "$label: $it файлов" }, { it.localizedMessage ?: "Не удалось изменить видео" })
+                    val report = withContext(Dispatchers.IO) { VideoMediaManager.applyEdits(context, edits) }
+                    failedWrite = if (report.failed.isEmpty()) null else report.failed to label
+                    error = "$label: ${report.changed} из ${edits.size}" +
+                        if (report.failed.isEmpty()) "" else ". Не изменено: " +
+                            report.failed.take(3).joinToString { it.name ?: it.uri.lastPathSegment ?: "видео" }
                     selectedUris = emptySet(); refresh++
                 }
             } catch (exception: Exception) { error = exception.localizedMessage ?: "Не удалось изменить видео" }
@@ -260,6 +267,11 @@ object VideoModule {
                 TextButton(onClick = { openRecent(history.first()) }) { Text("▶ Продолжить последнее: ${history.first().title}", maxLines = 1, overflow = TextOverflow.Ellipsis) }
             }
             if (error.isNotBlank()) Text(error, color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.bodySmall)
+            failedWrite?.let { (edits, label) ->
+                TextButton(onClick = { write(edits, label) }) {
+                    Text("Повторить только неуспешные (${edits.size})")
+                }
+            }
             if (!allowed) {
                 TextButton(onClick = openSettings) { Text("Настроить разделы") }
                 return@Column

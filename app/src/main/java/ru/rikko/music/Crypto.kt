@@ -1,6 +1,8 @@
 package ru.rikko.music
 
 import java.security.MessageDigest
+import java.io.File
+import java.io.RandomAccessFile
 import javax.crypto.Cipher
 import javax.crypto.Mac
 import javax.crypto.spec.IvParameterSpec
@@ -68,5 +70,34 @@ object Crypto {
         }
         val n = cipher.doFinal(buf, 0)
         System.arraycopy(buf, 0, data, outOff, n)
+    }
+
+    fun decryptAesCtrFileInPlace(file: File, hexKey: String) {
+        require(hexKey.length == 32 || hexKey.length == 48 || hexKey.length == 64) {
+            "Некорректный ключ аудио"
+        }
+        require(hexKey.all { Character.digit(it, 16) >= 0 }) { "Некорректный ключ аудио" }
+        val key = ByteArray(hexKey.length / 2) {
+            ((Character.digit(hexKey[it * 2], 16) shl 4) or
+                Character.digit(hexKey[it * 2 + 1], 16)).toByte()
+        }
+        val cipher = Cipher.getInstance("AES/CTR/NoPadding")
+        cipher.init(Cipher.DECRYPT_MODE, SecretKeySpec(key, "AES"), IvParameterSpec(ByteArray(16)))
+        RandomAccessFile(file, "rw").use { input ->
+            val buffer = ByteArray(64 * 1024)
+            var offset = 0L
+            while (offset < input.length()) {
+                if (Thread.currentThread().isInterrupted)
+                    throw java.io.InterruptedIOException("Расшифровка отменена")
+                input.seek(offset)
+                val count = input.read(buffer, 0, minOf(buffer.size.toLong(), input.length() - offset).toInt())
+                if (count <= 0) throw java.io.EOFException("Не удалось прочитать аудиофайл")
+                val decoded = cipher.update(buffer, 0, count)
+                input.seek(offset)
+                input.write(decoded)
+                offset += count
+            }
+            cipher.doFinal()
+        }
     }
 }

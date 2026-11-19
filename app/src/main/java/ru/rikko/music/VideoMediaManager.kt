@@ -13,6 +13,15 @@ data class VideoEdit(val uri: Uri, val name: String? = null, val path: String? =
 }
 
 object VideoMediaManager {
+    data class EditReport(val changed: Int, val failed: List<VideoEdit>)
+
+    fun applyEdits(context: Context, edits: List<VideoEdit>): EditReport {
+        val report = BatchOperations.run(edits) { edit ->
+            context.contentResolver.update(edit.uri, edit.values(), null, null) > 0
+        }
+        return EditReport(report.succeeded.size, report.failed.map { it.item })
+    }
+
     fun rename(video: LocalVideo, value: String): VideoEdit {
         val clean = validName(value)
         val extension = video.name.substringAfterLast('.', "").takeIf { it.isNotEmpty() }?.let { ".$it" }.orEmpty()
@@ -67,7 +76,9 @@ object VideoMediaManager {
                         input.copyTo(output)
                     }
                 }
-                context.contentResolver.update(destination, ContentValues().apply { put(MediaStore.MediaColumns.IS_PENDING, 0) }, null, null)
+                if (context.contentResolver.update(destination,
+                        ContentValues().apply { put(MediaStore.MediaColumns.IS_PENDING, 0) }, null, null) <= 0
+                ) throw IllegalStateException("Не удалось завершить сохранение видео")
                 count++
             } catch (error: Exception) {
                 context.contentResolver.delete(destination, null, null)

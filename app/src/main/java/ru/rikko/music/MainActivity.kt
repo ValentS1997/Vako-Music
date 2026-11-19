@@ -107,15 +107,39 @@ import android.content.pm.PackageManager
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import android.os.Handler
-import android.os.Looper
 import android.os.SystemClock
+import java.util.concurrent.ArrayBlockingQueue
+import java.util.concurrent.ThreadPoolExecutor
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.RejectedExecutionException
 import kotlin.math.cos
 import kotlin.math.sin
 import kotlin.math.sqrt
 
 
 class MainActivity : ComponentActivity() {
+    @Volatile private var closing = false
+    private val backgroundExecutor = ThreadPoolExecutor(
+        3, 3, 0L, TimeUnit.MILLISECONDS, ArrayBlockingQueue(24)
+    )
+
+    private fun backgroundTask(block: () -> Unit) {
+        try {
+            backgroundExecutor.execute {
+                if (!Thread.currentThread().isInterrupted) block()
+            }
+        } catch (_: RejectedExecutionException) {
+            status = "Слишком много фоновых задач. Подождите завершения текущих."
+        }
+    }
+
+    private fun postIfActive(action: () -> Unit) {
+        if (closing || isDestroyed || isFinishing) return
+        runOnUiThread {
+            if (!closing && !isDestroyed && !isFinishing) action()
+        }
+    }
+
     private sealed interface QueueItem {
         data class Local(val song: LocalSong) : QueueItem
         data class Remote(val track: Track) : QueueItem
@@ -171,6 +195,7 @@ class MainActivity : ComponentActivity() {
     private var editName by mutableStateOf("")
     private var editError by mutableStateOf("")
     private var pendingMediaEdits = emptyList<MediaEdit>()
+    private var failedMediaEdits by mutableStateOf<List<MediaEdit>>(emptyList())
     private var pendingMediaDescription = ""
     private var token by mutableStateOf("")
     private var tokenInput by mutableStateOf("")
@@ -245,13 +270,13 @@ class MainActivity : ComponentActivity() {
     private var waveform by mutableStateOf(ByteArray(0))
     private var spectrum by mutableStateOf(ByteArray(0))
     private var playbackService: PlaybackService? = null
+    private var scanRequested = false
     private val player: MediaPlayer? get() = playbackService?.player
     private val playbackListener = object : PlaybackService.Listener {
         override fun onPrepared(duration: Int) {
             prepared = true
             durationMs = duration
             playing = playbackService?.player?.isPlaying == true
-            if (sleepTimerFired) { playbackService?.pause(); playing = false }
             if (eqEnabled) startEqualizer()
             status = ""
             if (visualizerVisible) startVisualizer()
@@ -265,7 +290,16 @@ class MainActivity : ComponentActivity() {
             } else nextTrack(automatic = true)
         }
         override fun onError() { playing = false; status = "Ошибка воспроизведения" }
-        override fun onPlayPause() { togglePlayback() }
+        override fun onPlayRequest() {
+            if (queue.isNotEmpty()) playQueueItem()
+        }
+        override fun onPlaybackStateChanged(playing: Boolean) {
+            this@MainActivity.playing = playing
+            if (sleepDeadline > 0L && playbackService?.sleepDeadline == 0L) {
+                sleepDeadline = 0L
+                sleepRemainingMs = 0L
+            }
+        }
         override fun onNext() { nextTrack() }
         override fun onPrevious() { previousTrack() }
     }
@@ -274,6 +308,8 @@ class MainActivity : ComponentActivity() {
             val service = (binder as? PlaybackService.LocalBinder)?.service ?: return
             playbackService = service
             service.listener = playbackListener
+            sleepDeadline = service.sleepDeadline
+            sleepRemainingMs = (sleepDeadline - SystemClock.elapsedRealtime()).coerceAtLeast(0L)
             if (service.title.isNotBlank()) {
                 currentTitle = service.title
                 currentArtist = service.artist
@@ -290,11 +326,8 @@ class MainActivity : ComponentActivity() {
     private var eqLevels by mutableStateOf<List<Short>>(emptyList())
     private var eqFrequencies by mutableStateOf<List<Int>>(emptyList())
     private var eqRange by mutableStateOf(Pair<Short, Short>(-1500, 1500))
-    private val timerHandler = Handler(Looper.getMainLooper())
     private var sleepDeadline by mutableStateOf(0L)
     private var sleepRemainingMs by mutableStateOf(0L)
-    private var sleepTimerFired = false
-    private val sleepAction = Runnable { stopForSleepTimer() }
 
     private val picker = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) {
@@ -415,18 +448,29 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun refreshLibrary() {
+        if (scanning) {
+            scanRequested = true
+            return
+        }
         scanning = true
-        Thread {
-            val songs = libraryStore.songs()
-            runOnUiThread {
-                localSongs = songs
+        backgroundTask {
+            val result = runCatching { libraryStore.songs() }
+            postIfActive {
                 scanning = false
-                if (!queueRestored) {
-                    queueRestored = true
-                    if (queue.isEmpty()) savedQueueStore.loadCurrent()?.let { restoreQueue(it, songs, keepPlayback = true) }
+                result.onSuccess { songs ->
+                    localSongs = songs
+                    if (!queueRestored) {
+                        queueRestored = true
+                        if (queue.isEmpty()) savedQueueStore.loadCurrent()?.let { restoreQueue(it, songs, keepPlayback = true) }
+                    }
+                }
+                result.onFailure { status = "Не удалось обновить медиатеку: ${it.message ?: "ошибка"}" }
+                if (scanRequested) {
+                    scanRequested = false
+                    refreshLibrary()
                 }
             }
-        }.start()
+        }
     }
 
     private fun queueSnapshot(): SavedQueueStore.Snapshot = SavedQueueStore.Snapshot(
@@ -470,11 +514,11 @@ class MainActivity : ComponentActivity() {
         if (token.isBlank()) { status = "Сначала подключите аккаунт в настройках"; activeTab = 3; return }
         busy = true
         status = "Ищем…"
-        Thread {
+        backgroundTask {
             try {
                 val found = MusicRepository.searchTracks(q, token)
                 val foundArtists = MusicRepository.searchArtists(q, token)
-                runOnUiThread {
+                postIfActive {
                     results = found
                     artists = foundArtists
                     selectedArtist = ""
@@ -482,9 +526,9 @@ class MainActivity : ComponentActivity() {
                     busy = false
                 }
             } catch (e: Exception) {
-                runOnUiThread { status = "Ошибка поиска: ${e.message ?: "неизвестная ошибка"}"; busy = false }
+                postIfActive { status = "Ошибка поиска: ${e.message ?: "неизвестная ошибка"}"; busy = false }
             }
-        }.start()
+        }
     }
 
     private fun openArtist(artist: MusicRepository.Artist) {
@@ -492,19 +536,19 @@ class MainActivity : ComponentActivity() {
         if (selectedArtist.isBlank()) searchResultsBeforeArtist = results
         busy = true
         status = "Открываем: ${artist.name}"
-        Thread {
+        backgroundTask {
             try {
                 val tracks = MusicRepository.artistTracks(artist.id, token)
-                runOnUiThread {
+                postIfActive {
                     results = tracks
                     selectedArtist = artist.name
                     status = if (tracks.isEmpty()) "У исполнителя пока нет доступных треков" else ""
                     busy = false
                 }
             } catch (e: Exception) {
-                runOnUiThread { status = "Не удалось открыть исполнителя: ${e.message ?: "ошибка"}"; busy = false }
+                postIfActive { status = "Не удалось открыть исполнителя: ${e.message ?: "ошибка"}"; busy = false }
             }
-        }.start()
+        }
     }
 
     private fun openLink() {
@@ -514,28 +558,28 @@ class MainActivity : ComponentActivity() {
         if (token.isBlank()) { status = "Сначала подключите аккаунт в настройках"; activeTab = 3; return }
         busy = true
         status = "Открываем подборку…"
-        Thread {
+        backgroundTask {
             try {
                 val tracks = MusicRepository.playlistFromUrl(link, token)
-                runOnUiThread { playlist = tracks; status = "Открыто треков: ${tracks.size}"; busy = false }
+                postIfActive { playlist = tracks; status = "Открыто треков: ${tracks.size}"; busy = false }
             } catch (e: Exception) {
-                runOnUiThread { status = "Не удалось открыть: ${e.message ?: "неизвестная ошибка"}"; busy = false }
+                postIfActive { status = "Не удалось открыть: ${e.message ?: "неизвестная ошибка"}"; busy = false }
             }
-        }.start()
+        }
     }
 
     private fun loadOwnPlaylists() {
         if (token.isBlank()) { status = "Сначала подключите аккаунт в настройках"; return }
         busy = true
         status = "Загружаем плейлисты…"
-        Thread {
+        backgroundTask {
             try {
                 val items = MusicRepository.ownPlaylists(token)
-                runOnUiThread { ownPlaylists = items; busy = false; status = "Плейлистов: ${items.size}" }
+                postIfActive { ownPlaylists = items; busy = false; status = "Плейлистов: ${items.size}" }
             } catch (e: Exception) {
-                runOnUiThread { busy = false; status = "Не удалось получить плейлисты: ${e.message ?: "ошибка"}" }
+                postIfActive { busy = false; status = "Не удалось получить плейлисты: ${e.message ?: "ошибка"}" }
             }
-        }.start()
+        }
     }
 
     private fun openOwnPlaylist(item: MusicRepository.UserPlaylist) {
@@ -545,14 +589,14 @@ class MainActivity : ComponentActivity() {
         renameInput = item.title
         busy = true
         status = "Загружаем ${item.title}…"
-        Thread {
+        backgroundTask {
             try {
                 val tracks = MusicRepository.playlistTracks(item, token)
-                runOnUiThread { remotePlaylistTracks = tracks; busy = false; status = "Треков: ${tracks.size}" }
+                postIfActive { remotePlaylistTracks = tracks; busy = false; status = "Треков: ${tracks.size}" }
             } catch (e: Exception) {
-                runOnUiThread { busy = false; status = "Не удалось открыть плейлист: ${e.message ?: "ошибка"}" }
+                postIfActive { busy = false; status = "Не удалось открыть плейлист: ${e.message ?: "ошибка"}" }
             }
-        }.start()
+        }
     }
 
     private fun openLikedTracks() {
@@ -568,24 +612,24 @@ class MainActivity : ComponentActivity() {
         if (likedLoading) return
         likedLoading = true
         likedProgress = "Загружаем «Мне нравится»…"
-        Thread {
+        backgroundTask {
             try {
                 val tracks = MusicRepository.likedTracks(token) { done, total ->
-                    runOnUiThread { likedProgress = "Загружаем «Мне нравится»: $done/$total" }
+                    postIfActive { likedProgress = "Загружаем «Мне нравится»: $done/$total" }
                 }
-                runOnUiThread {
+                postIfActive {
                     likedTracks = tracks
                     likedLoaded = true
                     likedLoading = false
                     likedProgress = "${trackCountLabel(tracks.size)}"
                 }
             } catch (e: Exception) {
-                runOnUiThread {
+                postIfActive {
                     likedLoading = false
                     likedProgress = "Не удалось загрузить «Мне нравится»: ${e.message ?: "ошибка"}"
                 }
             }
-        }.start()
+        }
     }
 
     private fun renameOwnPlaylist() {
@@ -593,10 +637,10 @@ class MainActivity : ComponentActivity() {
         val name = renameInput.trim()
         if (name.isBlank() || name == item.title) return
         busy = true
-        Thread {
+        backgroundTask {
             try {
                 MusicRepository.renamePlaylist(item, name, token)
-                runOnUiThread {
+                postIfActive {
                     val changed = item.copy(title = name)
                     selectedRemotePlaylist = changed
                     ownPlaylists = ownPlaylists.map { if (it.kind == item.kind) changed else it }
@@ -604,23 +648,23 @@ class MainActivity : ComponentActivity() {
                     status = "Название сохранено в Яндекс Музыке"
                 }
             } catch (e: Exception) {
-                runOnUiThread { busy = false; status = "Не удалось переименовать: ${e.message ?: "ошибка"}" }
+                postIfActive { busy = false; status = "Не удалось переименовать: ${e.message ?: "ошибка"}" }
             }
-        }.start()
+        }
     }
 
     private fun removeOwnTrack(position: Int) {
         val item = selectedRemotePlaylist ?: return
         busy = true
-        Thread {
+        backgroundTask {
             try {
                 MusicRepository.removePlaylistTrack(item, position, token)
                 val tracks = MusicRepository.playlistTracks(item, token)
-                runOnUiThread { remotePlaylistTracks = tracks; busy = false; status = "Трек удалён из Яндекс Музыки" }
+                postIfActive { remotePlaylistTracks = tracks; busy = false; status = "Трек удалён из Яндекс Музыки" }
             } catch (e: Exception) {
-                runOnUiThread { busy = false; status = "Не удалось удалить трек: ${e.message ?: "ошибка"}" }
+                postIfActive { busy = false; status = "Не удалось удалить трек: ${e.message ?: "ошибка"}" }
             }
-        }.start()
+        }
     }
 
     private fun addOwnTrack(item: MusicRepository.UserPlaylist, track: Track) {
@@ -630,19 +674,19 @@ class MainActivity : ComponentActivity() {
     private fun addOwnTracks(item: MusicRepository.UserPlaylist, tracks: List<Track>) {
         if (tracks.isEmpty()) return
         busy = true
-        Thread {
+        backgroundTask {
             try {
                 MusicRepository.addPlaylistTracks(item, tracks, token)
                 val updated = if (selectedRemotePlaylist?.kind == item.kind) MusicRepository.playlistTracks(item, token) else null
-                runOnUiThread {
+                postIfActive {
                     if (updated != null) remotePlaylistTracks = updated
                     busy = false
                     status = "Добавлено в «${item.title}»: ${tracks.size}"
                 }
             } catch (e: Exception) {
-                runOnUiThread { busy = false; status = "Не удалось добавить трек: ${e.message ?: "ошибка"}" }
+                postIfActive { busy = false; status = "Не удалось добавить трек: ${e.message ?: "ошибка"}" }
             }
-        }.start()
+        }
     }
 
     private fun trackKey(track: Track): String = "${track.trackId}:${track.albumId}"
@@ -684,6 +728,11 @@ class MainActivity : ComponentActivity() {
             status = "Этот файл открыт через системный выбор; изменение пути недоступно"
             return
         }
+        if (edits.map { it.uri }.distinct().size != edits.size) {
+            status = "Один файл попал в операцию несколько раз"
+            return
+        }
+        failedMediaEdits = emptyList()
         pendingMediaEdits = edits
         pendingMediaDescription = description
         try {
@@ -697,22 +746,20 @@ class MainActivity : ComponentActivity() {
     private fun applyMediaEdits() {
         val edits = pendingMediaEdits
         val description = pendingMediaDescription
-        Thread {
-            var changed = 0
-            var failure: Exception? = null
-            for (edit in edits) {
-                try {
-                    changed += contentResolver.update(edit.uri, edit.values(), null, null)
-                } catch (e: Exception) { failure = e; break }
+        backgroundTask {
+            val report = BatchOperations.run(edits) { edit ->
+                contentResolver.update(edit.uri, edit.values(), null, null) > 0
             }
-            runOnUiThread {
+            postIfActive {
                 pendingMediaEdits = emptyList()
+                failedMediaEdits = report.failed.map { it.item }
                 refreshLibrary()
-                status = if (failure == null) "$description: $changed файлов"
-                else if (failure is RecoverableSecurityException) "Android не предоставил доступ к одному из файлов"
-                else "$description: $changed из ${edits.size}. ${failure.message ?: "Ошибка"}"
+                status = if (report.failed.isEmpty()) "$description: ${report.succeeded.size} файлов"
+                else "$description: ${report.succeeded.size} из ${edits.size}. Не изменены: " +
+                    report.failed.take(3).joinToString { it.item.name ?: it.item.uri.lastPathSegment ?: "файл" } +
+                    if (report.failed.size > 3) " и ещё ${report.failed.size - 3}" else ""
             }
-        }.start()
+        }
     }
 
     private fun shareSong(song: LocalSong) {
@@ -741,7 +788,7 @@ class MainActivity : ComponentActivity() {
         bulkDone = 0
         bulkTotal = tracks.size
         status = "Скачиваем «$title»: 0/${tracks.size}"
-        Thread {
+        backgroundTask {
             var failed = 0
             val downloader = Downloader(this)
             for ((index, track) in tracks.withIndex()) {
@@ -750,15 +797,15 @@ class MainActivity : ComponentActivity() {
                     val result = downloader.downloadTrack(track, token, downloadQuality, wantNativeFlac = true, wantLyrics = false)
                     result.uri?.let(libraryStore::addUri)
                 } catch (_: Exception) { failed++ }
-                runOnUiThread { bulkDone = index + 1; status = "Скачиваем «$title»: $bulkDone/${tracks.size}" }
+                postIfActive { bulkDone = index + 1; status = "Скачиваем «$title»: $bulkDone/${tracks.size}" }
             }
-            runOnUiThread {
+            postIfActive {
                 bulkDownloading = false
                 status = if (cancelBulk) "Загрузка остановлена: $bulkDone/${tracks.size}, ошибок: $failed"
                 else "Загрузка завершена: ${tracks.size - failed}/${tracks.size}, ошибок: $failed"
                 refreshLibrary()
             }
-        }.start()
+        }
     }
 
     private fun playRemote(track: Track, source: List<Track> = results) {
@@ -795,7 +842,6 @@ class MainActivity : ComponentActivity() {
 
     private fun playQueueItem() {
         val item = queue.getOrNull(queueIndex) ?: return
-        sleepTimerFired = false
         val generation = ++playbackGeneration
         stopVisualizer()
         stopEqualizer()
@@ -819,14 +865,14 @@ class MainActivity : ComponentActivity() {
                 currentTitle = item.track.title
                 currentArtist = item.track.artist
                 status = "Загружаем аудио…"
-                Thread {
+                backgroundTask {
                     try {
                         val source = YandexMusic.getAudioSource(item.track, Quality.MP3_320, token)
-                        runOnUiThread { if (generation == playbackGeneration) startPlayer(source.url, null) }
+                        postIfActive { if (generation == playbackGeneration) startPlayer(source.url, null) }
                     } catch (e: Exception) {
-                        runOnUiThread { if (generation == playbackGeneration) status = "Не удалось воспроизвести: ${e.message ?: "неизвестная ошибка"}" }
+                        postIfActive { if (generation == playbackGeneration) status = "Не удалось воспроизвести: ${e.message ?: "неизвестная ошибка"}" }
                     }
-                }.start()
+                }
             }
         }
     }
@@ -843,7 +889,6 @@ class MainActivity : ComponentActivity() {
             return
         }
         if (prepared) {
-            sleepTimerFired = false
             playbackService?.toggle()
             playing = player?.isPlaying == true
         }
@@ -959,7 +1004,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun loadCover(item: QueueItem, generation: Int) {
-        Thread {
+        backgroundTask {
             val image = try {
                 val bytes = when (item) {
                     is QueueItem.Local -> {
@@ -967,15 +1012,17 @@ class MainActivity : ComponentActivity() {
                         try { retriever.setDataSource(this, item.song.uri); retriever.embeddedPicture }
                         finally { retriever.release() }
                     }
-                    is QueueItem.Remote -> YandexMusic.coverUrl(item.track.coverUri, "300x300")?.let { Http.getBytes(it) }
+                    is QueueItem.Remote -> YandexMusic.coverUrl(item.track.coverUri, "300x300")?.let {
+                        Http.getBytes(it, maxBytes = 4 * 1024 * 1024)
+                    }
                 }
                 bytes?.let {
                     BitmapFactory.decodeByteArray(it, 0, it.size, BitmapFactory.Options().apply { inSampleSize = 2 })
                         ?.asImageBitmap()
                 }
             } catch (_: Exception) { null }
-            runOnUiThread { if (generation == playbackGeneration) cover = image }
-        }.start()
+            postIfActive { if (generation == playbackGeneration) cover = image }
+        }
     }
 
     private fun startEqualizer() {
@@ -1020,26 +1067,15 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun startSleepTimer(minutes: Int) {
-        timerHandler.removeCallbacks(sleepAction)
-        sleepDeadline = SystemClock.elapsedRealtime() + minutes * 60_000L
-        sleepRemainingMs = minutes * 60_000L
-        timerHandler.postDelayed(sleepAction, minutes * 60_000L)
+        playbackService?.setSleepTimer(minutes)
+        sleepDeadline = playbackService?.sleepDeadline ?: 0L
+        sleepRemainingMs = (sleepDeadline - SystemClock.elapsedRealtime()).coerceAtLeast(0L)
     }
 
     private fun cancelSleepTimer() {
-        timerHandler.removeCallbacks(sleepAction)
+        playbackService?.cancelSleepTimer()
         sleepDeadline = 0L
         sleepRemainingMs = 0L
-    }
-
-    private fun stopForSleepTimer() {
-        sleepTimerFired = true
-        ++playbackGeneration
-        if (prepared && player?.isPlaying == true) playbackService?.pause()
-        playing = false
-        sleepDeadline = 0L
-        sleepRemainingMs = 0L
-        status = "Таймер сна остановил воспроизведение"
     }
 
     private fun startVisualizer() {
@@ -1056,10 +1092,10 @@ class MainActivity : ComponentActivity() {
             effect.captureSize = 256.coerceIn(Visualizer.getCaptureSizeRange()[0], Visualizer.getCaptureSizeRange()[1])
             effect.setDataCaptureListener(object : Visualizer.OnDataCaptureListener {
                 override fun onWaveFormDataCapture(visualizer: Visualizer?, data: ByteArray?, samplingRate: Int) {
-                    if (data != null) runOnUiThread { waveform = data.copyOf() }
+                    if (data != null) postIfActive { waveform = data.copyOf() }
                 }
                 override fun onFftDataCapture(visualizer: Visualizer?, data: ByteArray?, samplingRate: Int) {
-                    if (data != null) runOnUiThread { spectrum = data.copyOf() }
+                    if (data != null) postIfActive { spectrum = data.copyOf() }
                 }
             }, Visualizer.getMaxCaptureRate() / 2, true, true)
             effect.enabled = true
@@ -1083,14 +1119,14 @@ class MainActivity : ComponentActivity() {
         downloading = true
         progress = 0f
         status = "Скачиваем: ${track.title}"
-        Thread {
+        backgroundTask {
             try {
                 val result = Downloader(this).downloadTrack(
                     track, token, downloadQuality, wantNativeFlac = true, wantLyrics = false
                 ) { bytes, total ->
-                    if (total > 0) runOnUiThread { progress = (bytes.toFloat() / total).coerceIn(0f, 1f) }
+                    if (total > 0) postIfActive { progress = (bytes.toFloat() / total).coerceIn(0f, 1f) }
                 }
-                runOnUiThread {
+                postIfActive {
                     result.uri?.let { uri ->
                         libraryStore.addUri(uri)
                         refreshLibrary()
@@ -1100,13 +1136,14 @@ class MainActivity : ComponentActivity() {
                     progress = 0f
                 }
             } catch (e: Exception) {
-                runOnUiThread { status = "Ошибка загрузки: ${e.message ?: "неизвестная ошибка"}"; downloading = false; progress = 0f }
+                postIfActive { status = "Ошибка загрузки: ${e.message ?: "неизвестная ошибка"}"; downloading = false; progress = 0f }
             }
-        }.start()
+        }
     }
 
     override fun onDestroy() {
-        cancelSleepTimer()
+        closing = true
+        backgroundExecutor.shutdownNow()
         stopVisualizer()
         stopEqualizer()
         playbackService?.listener = null
@@ -2717,6 +2754,11 @@ class MainActivity : ComponentActivity() {
         if (status.isNotBlank()) {
             Spacer(Modifier.height(10.dp))
             Text(status, color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodySmall)
+        }
+        if (failedMediaEdits.isNotEmpty()) {
+            TextButton(onClick = { startMediaEdits(failedMediaEdits, pendingMediaDescription) }) {
+                Text("Повторить только неуспешные (${failedMediaEdits.size})")
+            }
         }
         if (downloading) {
             Spacer(Modifier.height(6.dp))

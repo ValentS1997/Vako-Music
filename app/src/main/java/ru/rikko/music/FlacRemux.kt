@@ -2,6 +2,9 @@ package ru.rikko.music
 
 import java.io.ByteArrayOutputStream
 import java.io.OutputStream
+import java.io.File
+import java.io.RandomAccessFile
+import java.nio.channels.FileChannel
 
 /**
  * Переупаковка FLAC из MP4-контейнера в нативный .flac — без перекодирования.
@@ -16,14 +19,42 @@ import java.io.OutputStream
 object FlacRemux {
 
     class NotFlacMp4(message: String) : Exception(message)
+    private const val MAX_SAMPLES = 100_000
+    private const val MAX_CHUNKS = 100_000
+    private interface Bytes {
+        val size: Int
+        operator fun get(index: Int): Byte
+        fun copy(start: Int, end: Int): ByteArray
+    }
+    private class ArrayBytes(private val data: ByteArray) : Bytes {
+        override val size get() = data.size
+        override fun get(index: Int) = data[index]
+        override fun copy(start: Int, end: Int) = data.copyOfRange(start, end)
+    }
+    private class MappedBytes(private val data: java.nio.ByteBuffer) : Bytes {
+        override val size get() = data.limit()
+        override fun get(index: Int): Byte = data.get(index)
+        override fun copy(start: Int, end: Int): ByteArray =
+            ByteArray(end - start).also { target ->
+                val view = data.duplicate()
+                view.position(start)
+                view.get(target)
+            }
+    }
 
-    private fun rd32(b: ByteArray, o: Int): Int =
-        ((b[o].toInt() and 0xff) shl 24) or
+    private fun fits(b: Bytes, offset: Long, length: Long): Boolean =
+        offset >= 0 && length >= 0 && offset <= b.size.toLong() &&
+            length <= b.size.toLong() - offset
+
+    private fun rd32(b: Bytes, o: Int): Int {
+        if (!fits(b, o.toLong(), 4)) throw NotFlacMp4("Неполная таблица MP4")
+        return ((b[o].toInt() and 0xff) shl 24) or
                 ((b[o + 1].toInt() and 0xff) shl 16) or
                 ((b[o + 2].toInt() and 0xff) shl 8) or
                 (b[o + 3].toInt() and 0xff)
+    }
 
-    private fun findSig(b: ByteArray, sig: String, from: Int = 0): Int {
+    private fun findSig(b: Bytes, sig: String, from: Int = 0): Int {
         val s = sig.toByteArray(Charsets.US_ASCII)
         var i = from
         while (i + s.size <= b.size) {
@@ -46,16 +77,16 @@ object FlacRemux {
                 b[2] == 'a'.code.toByte() && b[3] == 'C'.code.toByte()
 
     /** STREAMINFO лежит в боксе dfLa сразу после версии и флагов. */
-    private fun extractStreamInfo(b: ByteArray): ByteArray? {
+    private fun extractStreamInfo(b: Bytes): ByteArray? {
         val dfla = findSig(b, "dfLa")
         if (dfla < 0) return null
         val si = dfla + 4 + 4
         if (si + 4 > b.size) return null
         val blockSize = ((b[si + 1].toInt() and 0xff) shl 16) or
                 ((b[si + 2].toInt() and 0xff) shl 8) or (b[si + 3].toInt() and 0xff)
-        val end = si + 4 + blockSize
-        if (end > b.size) return null
-        val block = b.copyOfRange(si, end)
+        val end = si.toLong() + 4 + blockSize
+        if (blockSize != 34 || !fits(b, si.toLong(), 4L + blockSize)) return null
+        val block = b.copy(si, end.toInt())
         // Тип 0 — это и есть STREAMINFO
         if ((block[0].toInt() and 0x7f) != 0) return null
         return block
@@ -73,13 +104,14 @@ object FlacRemux {
      * Находим кадры по таблицам. Брать mdat целиком нельзя: между чанками
      * встречается выравнивание, из-за которого декодер спотыкается.
      */
-    private fun frameRanges(b: ByteArray, streamInfo: ByteArray): Plan? {
+    private fun frameRanges(b: Bytes, streamInfo: ByteArray): Plan? {
         val stszI = findSig(b, "stsz")
         if (stszI < 0) return null
         var ds = stszI + 4 + 4
         val uniformSize = rd32(b, ds)
         val count = rd32(b, ds + 4)
-        if (count <= 0) return null
+        if (count !in 1..MAX_SAMPLES || uniformSize < 0) return null
+        if (!fits(b, ds.toLong() + 8, if (uniformSize == 0) count.toLong() * 4 else 0)) return null
         val sizes = IntArray(count)
         if (uniformSize == 0) {
             for (j in 0 until count) sizes[j] = rd32(b, ds + 8 + j * 4)
@@ -93,6 +125,7 @@ object FlacRemux {
         if (stcoI >= 0) {
             ds = stcoI + 4 + 4
             val cc = rd32(b, ds)
+            if (cc !in 1..MAX_CHUNKS || !fits(b, ds.toLong() + 4, cc.toLong() * 4)) return null
             chunkOffsets = LongArray(cc)
             for (j in 0 until cc) chunkOffsets[j] = rd32(b, ds + 4 + j * 4).toLong() and 0xffffffffL
         } else {
@@ -100,6 +133,7 @@ object FlacRemux {
             if (co64I < 0) return null
             ds = co64I + 4 + 4
             val cc = rd32(b, ds)
+            if (cc !in 1..MAX_CHUNKS || !fits(b, ds.toLong() + 4, cc.toLong() * 8)) return null
             chunkOffsets = LongArray(cc)
             for (j in 0 until cc) {
                 val hi = rd32(b, ds + 4 + j * 8).toLong() and 0xffffffffL
@@ -115,6 +149,7 @@ object FlacRemux {
         if (stscI < 0) return null
         ds = stscI + 4 + 4
         val sc = rd32(b, ds)
+        if (sc !in 1..MAX_CHUNKS || !fits(b, ds.toLong() + 4, sc.toLong() * 12)) return null
         val firstChunk = IntArray(sc)
         val samplesPerChunk = IntArray(sc)
         for (j in 0 until sc) {
@@ -126,6 +161,7 @@ object FlacRemux {
             val fc = firstChunk[idx]
             val spc = samplesPerChunk[idx]
             val nextFc = if (idx + 1 < sc) firstChunk[idx + 1] else ccount + 1
+            if (fc !in 1..ccount || nextFc <= fc || nextFc > ccount + 1 || spc <= 0) return null
             var c = fc
             while (c < nextFc && c <= ccount) {
                 spcPerChunk[c] = spc
@@ -134,7 +170,10 @@ object FlacRemux {
         }
 
         var total = 0L
-        for (s in sizes) total += s
+        for (s in sizes) {
+            if (s <= 0) return null
+            total += s
+        }
         if (total <= 0 || total > Int.MAX_VALUE) return null
 
         val offsets = LongArray(count)
@@ -147,8 +186,9 @@ object FlacRemux {
             var k = 0
             while (k < spc && sampleIdx < count) {
                 val sz = sizes[sampleIdx]
-                if (off < 0 || off + sz > b.size) return null
+                if (!fits(b, off, sz.toLong())) return null
                 if (n > 0 && offsets[n - 1] + lengths[n - 1] == off) {
+                    if (lengths[n - 1].toLong() + sz > Int.MAX_VALUE) return null
                     lengths[n - 1] += sz
                 } else {
                     offsets[n] = off
@@ -160,6 +200,7 @@ object FlacRemux {
                 k++
             }
         }
+        if (sampleIdx != count) return null
         return Plan(streamInfo, offsets, lengths, n)
     }
 
@@ -223,13 +264,24 @@ object FlacRemux {
      * Проверяет, что внутри FLAC, и находит кадры. Бросает NotFlacMp4 до того,
      * как что-то записано, — вызывающий код тогда сохраняет исходный файл как .m4a.
      */
-    fun plan(mp4: ByteArray): Plan {
-        val streamInfo = extractStreamInfo(mp4)
+    private fun plan(bytes: Bytes): Plan {
+        val streamInfo = extractStreamInfo(bytes)
             ?: throw NotFlacMp4("В контейнере нет FLAC (бокс dfLa не найден)")
-        val plan = frameRanges(mp4, streamInfo)
+        val plan = frameRanges(bytes, streamInfo)
             ?: throw NotFlacMp4("Не удалось извлечь аудиокадры")
         if (plan.count == 0) throw NotFlacMp4("Аудиокадры пустые")
         return plan
+    }
+
+    fun plan(mp4: ByteArray): Plan = plan(ArrayBytes(mp4))
+
+    /** Таблицы MP4 читаются из файла через отображение без полной копии в Java heap. */
+    fun plan(file: File): Plan {
+        if (file.length() <= 0 || file.length() > Int.MAX_VALUE)
+            throw NotFlacMp4("Размер контейнера не поддерживается")
+        RandomAccessFile(file, "r").use { input ->
+            return plan(MappedBytes(input.channel.map(FileChannel.MapMode.READ_ONLY, 0, file.length())))
+        }
     }
 
     /**
@@ -238,6 +290,30 @@ object FlacRemux {
      * приложение посреди плейлиста (issue #76).
      */
     fun write(mp4: ByteArray, plan: Plan, track: Track, cover: ByteArray?, out: OutputStream) {
+        writeMetadata(plan, track, cover, out)
+        for (i in 0 until plan.count) {
+            out.write(mp4, plan.offsets[i].toInt(), plan.lengths[i])
+        }
+    }
+
+    fun write(file: File, plan: Plan, track: Track, cover: ByteArray?, out: OutputStream) {
+        writeMetadata(plan, track, cover, out)
+        RandomAccessFile(file, "r").use { input ->
+            val buffer = ByteArray(64 * 1024)
+            for (i in 0 until plan.count) {
+                input.seek(plan.offsets[i])
+                var remaining = plan.lengths[i]
+                while (remaining > 0) {
+                    val n = minOf(remaining, buffer.size)
+                    input.readFully(buffer, 0, n)
+                    out.write(buffer, 0, n)
+                    remaining -= n
+                }
+            }
+        }
+    }
+
+    private fun writeMetadata(plan: Plan, track: Track, cover: ByteArray?, out: OutputStream) {
         val si = plan.streamInfo.copyOf()
         si[0] = (si[0].toInt() and 0x7f).toByte()   // снимаем флаг «последний блок»
 
@@ -253,9 +329,6 @@ object FlacRemux {
             val isLast = i == blocks.size - 1
             out.write(metaBlockHeader(blk.first, blk.second.size, isLast))
             out.write(blk.second)
-        }
-        for (i in 0 until plan.count) {
-            out.write(mp4, plan.offsets[i].toInt(), plan.lengths[i])
         }
     }
 }

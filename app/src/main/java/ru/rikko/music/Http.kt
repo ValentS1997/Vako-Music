@@ -1,6 +1,8 @@
 package ru.rikko.music
 
 import java.io.ByteArrayOutputStream
+import java.io.File
+import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.URL
 
@@ -8,6 +10,52 @@ import java.net.URL
 object Http {
 
     private const val UA = "Mozilla/5.0 (Linux; Android 10) MusicDownloader/1.0"
+
+    /** Потоковая загрузка аудио в закрытый временный файл приложения. */
+    fun downloadToFile(
+        url: String,
+        destination: File,
+        onProgress: ((Long, Long) -> Unit)? = null,
+        maxBytes: Long = 512L * 1024 * 1024,
+    ) {
+        var current = url
+        repeat(6) {
+            val connection = open(current, null)
+            connection.instanceFollowRedirects = false
+            try {
+                val code = connection.responseCode
+                if (code in 300..399) {
+                    val location = connection.getHeaderField("Location")
+                        ?: throw IOException("Перенаправление без адреса")
+                    current = URL(URL(current), location).toString()
+                } else {
+                    if (code !in 200..299) throw HttpError(code, "")
+                    val total = connection.contentLengthLong
+                    if (total > maxBytes) throw IOException("Аудиофайл превышает лимит 512 МБ")
+                    var read = 0L
+                    connection.inputStream.use { input ->
+                        destination.outputStream().buffered(64 * 1024).use { output ->
+                            val buffer = ByteArray(64 * 1024)
+                            while (true) {
+                                if (Thread.currentThread().isInterrupted)
+                                    throw java.io.InterruptedIOException("Загрузка отменена")
+                                val count = input.read(buffer)
+                                if (count < 0) break
+                                read += count
+                                if (read > maxBytes) throw IOException("Аудиофайл превышает лимит 512 МБ")
+                                output.write(buffer, 0, count)
+                                onProgress?.invoke(read, total)
+                            }
+                        }
+                    }
+                    if (total >= 0 && read != total)
+                        throw java.io.EOFException("Соединение закрыто до окончания загрузки")
+                    return
+                }
+            } finally { connection.disconnect() }
+        }
+        throw IOException("Слишком много перенаправлений при скачивании")
+    }
 
     private fun open(url: String, token: String?, method: String = "GET"): HttpURLConnection {
         val c = URL(url).openConnection() as HttpURLConnection
@@ -54,7 +102,12 @@ object Http {
      * смене протокола, а Яндекс отвечает 308 на часть треков и уводит на другой
      * CDN-узел — без этого файл сохранялся пустым (см. обсуждение #51).
      */
-    fun getBytes(url: String, onProgress: ((Long, Long) -> Unit)? = null): ByteArray {
+    fun getBytes(
+        url: String,
+        onProgress: ((Long, Long) -> Unit)? = null,
+        maxBytes: Int = 96 * 1024 * 1024,
+    ): ByteArray {
+        require(maxBytes > 0)
         var current = url
         var hops = 0
         while (true) {
@@ -74,6 +127,7 @@ object Http {
             val code = c.responseCode
             if (code !in 200..299) throw HttpError(code, "")
             val total = c.contentLengthLong
+            if (total > maxBytes) throw DownloadSizeException(maxBytes)
             if (total in 1..Int.MAX_VALUE) {
                 // Сразу массив нужного размера: toByteArray() у ByteArrayOutputStream
                 // сделал бы вторую копию трека, а FLAC бывает по 40–60 МБ (issue #76)
@@ -82,12 +136,13 @@ object Http {
                 c.inputStream.use { input ->
                     while (read < data.size) {
                         val n = input.read(data, read, minOf(64 * 1024, data.size - read))
-                        if (n < 0) break
+                        if (n < 0) throw java.io.EOFException("Соединение закрыто до окончания загрузки")
+                        if (Thread.currentThread().isInterrupted) throw java.io.InterruptedIOException("Загрузка отменена")
                         read += n
                         onProgress?.invoke(read.toLong(), total)
                     }
                 }
-                return if (read == data.size) data else data.copyOf(read)
+                return data
             }
             val out = ByteArrayOutputStream(1 shl 20)
             val buf = ByteArray(64 * 1024)
@@ -96,6 +151,8 @@ object Http {
                 while (true) {
                     val n = input.read(buf)
                     if (n < 0) break
+                    if (read + n > maxBytes) throw DownloadSizeException(maxBytes)
+                    if (Thread.currentThread().isInterrupted) throw java.io.InterruptedIOException("Загрузка отменена")
                     out.write(buf, 0, n)
                     read += n
                     onProgress?.invoke(read, total)
@@ -104,6 +161,9 @@ object Http {
             return out.toByteArray()
         } finally { c.disconnect() }
     }
+
+    class DownloadSizeException(maxBytes: Int) :
+        java.io.IOException("Файл больше допустимого размера: " + maxBytes / 1024 / 1024 + " МБ")
 
     class HttpError(val code: Int, val body: String) :
         Exception("HTTP $code ${body.take(200)}")

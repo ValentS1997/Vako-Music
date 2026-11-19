@@ -34,4 +34,5 @@ dependencies {
     implementation("androidx.media3:media3-ui:1.4.1")
     implementation("androidx.compose.ui:ui-tooling-preview")
     debugImplementation("androidx.compose.ui:ui-tooling")
+    testImplementation("junit:junit:4.13.2")
 }
