@@ -174,13 +174,18 @@ object VideoModule {
                 addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
             }, "Поделиться видео"))
         }
-        fun open(video: LocalVideo, playlist: String? = null) {
+        fun open(video: LocalVideo, playlist: String? = null, queue: List<LocalVideo> = videos) {
             onOpenVideo()
             context.startActivity(Intent(context, VideoPlayerActivity::class.java).apply {
                 data = video.uri
                 putExtra(VideoPlayerActivity.EXTRA_TITLE, video.name)
                 putExtra(VideoPlayerActivity.EXTRA_DURATION, video.durationMs)
                 if (playlist != null) putExtra(VideoPlayerActivity.EXTRA_PLAYLIST, playlist)
+                val position = queue.indexOfFirst { it.uri == video.uri }
+                val nearby = if (position < 0) listOf(video) else
+                    queue.subList((position - 250).coerceAtLeast(0), (position + 251).coerceAtMost(queue.size))
+                putStringArrayListExtra(VideoPlayerActivity.EXTRA_QUEUE, ArrayList(nearby.map { it.uri.toString() }))
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
             })
         }
         fun openRecent(entry: VideoHistoryEntry) {
@@ -195,6 +200,9 @@ object VideoModule {
                 putExtra(VideoPlayerActivity.EXTRA_TITLE, video.name)
                 putExtra(VideoPlayerActivity.EXTRA_DURATION, video.durationMs)
                 putExtra(VideoPlayerActivity.EXTRA_START_POSITION, entry.positionMs)
+                val recentQueue = history.mapNotNull { item -> videos.firstOrNull { it.uri.toString() == item.uri } }
+                putStringArrayListExtra(VideoPlayerActivity.EXTRA_QUEUE, ArrayList(recentQueue.map { it.uri.toString() }))
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
             })
         }
         fun sorted(list: List<LocalVideo>): List<LocalVideo> = when (sort) {
@@ -395,7 +403,7 @@ object VideoModule {
                         }
                         VideoRow(video.name, details,
                             checked = uri in selectedUris,
-                            onClick = { if (selectedUris.isNotEmpty()) selectedUris = if (uri in selectedUris) selectedUris - uri else selectedUris + uri else if (tab == 3) openRecent(history.first { it.uri == uri }) else open(video, selectedPlaylist) },
+                            onClick = { if (selectedUris.isNotEmpty()) selectedUris = if (uri in selectedUris) selectedUris - uri else selectedUris + uri else if (tab == 3) openRecent(history.first { it.uri == uri }) else open(video, selectedPlaylist, visibleVideos) },
                             onLongClick = { selectedUris = selectedUris + uri },
                             menu = buildList {
                                 add("Выбрать" to { selectedUris = selectedUris + uri })

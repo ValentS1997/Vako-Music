@@ -8,6 +8,7 @@ import android.app.Activity
 import android.Manifest
 import android.os.Build
 import android.provider.MediaStore
+import android.provider.OpenableColumns
 import android.app.RecoverableSecurityException
 import android.media.MediaPlayer
 import android.media.MediaMetadataRetriever
@@ -158,7 +159,7 @@ class MainActivity : ComponentActivity() {
     private var pendingDeleteQueueName by mutableStateOf("")
     private var queueRestored by mutableStateOf(false)
     private var yandexEnabled by mutableStateOf(true)
-    private var videoEnabled by mutableStateOf(false)
+    private var videoEnabled by mutableStateOf(true)
     private var playlistsEnabled by mutableStateOf(true)
     private var foldersEnabled by mutableStateOf(true)
     private var recentEnabled by mutableStateOf(true)
@@ -235,6 +236,9 @@ class MainActivity : ComponentActivity() {
     private var downloading by mutableStateOf(false)
     private var progress by mutableStateOf(0f)
     private var status by mutableStateOf("")
+    private var checkingUpdate by mutableStateOf(false)
+    private var updateMessage by mutableStateOf("")
+    private var updateUrl by mutableStateOf("")
     private var currentTitle by mutableStateOf("")
     private var currentArtist by mutableStateOf("")
     private var playing by mutableStateOf(false)
@@ -271,6 +275,7 @@ class MainActivity : ComponentActivity() {
     private var spectrum by mutableStateOf(ByteArray(0))
     private var playbackService: PlaybackService? = null
     private var scanRequested = false
+    private var pendingExternalAudio: LocalSong? = null
     private val player: MediaPlayer? get() = playbackService?.player
     private val playbackListener = object : PlaybackService.Listener {
         override fun onPrepared(duration: Int) {
@@ -310,6 +315,10 @@ class MainActivity : ComponentActivity() {
             service.listener = playbackListener
             sleepDeadline = service.sleepDeadline
             sleepRemainingMs = (sleepDeadline - SystemClock.elapsedRealtime()).coerceAtLeast(0L)
+            pendingExternalAudio?.let { song ->
+                pendingExternalAudio = null
+                playLocal(song, listOf(song))
+            }
             if (service.title.isNotBlank()) {
                 currentTitle = service.title
                 currentArtist = service.artist
@@ -369,7 +378,7 @@ class MainActivity : ComponentActivity() {
         savedQueueStore = SavedQueueStore(this)
         savedQueueNames = savedQueueStore.names()
         yandexEnabled = appPreferences.enabled("yandex")
-        videoEnabled = appPreferences.enabled("video", false)
+        videoEnabled = appPreferences.enabled("video", true)
         playlistsEnabled = appPreferences.enabled("playlists")
         foldersEnabled = appPreferences.enabled("folders")
         recentEnabled = appPreferences.enabled("recent")
@@ -439,10 +448,22 @@ class MainActivity : ComponentActivity() {
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
+        setIntent(intent)
         acceptSharedLink(intent)
     }
 
     private fun acceptSharedLink(intent: Intent?) {
+        if (intent?.action == Intent.ACTION_VIEW && intent.data != null) {
+            val uri = intent.data!!
+            val name = runCatching {
+                contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)
+                    ?.use { if (it.moveToFirst()) it.getString(0) else null }
+            }.getOrNull() ?: uri.lastPathSegment ?: "Аудиофайл"
+            val song = LocalSong(uri, name.substringBeforeLast('.', name), fileName = name)
+            activeTab = 0
+            if (playbackService == null) pendingExternalAudio = song else playLocal(song, listOf(song))
+            return
+        }
         val shared = intent?.getStringExtra(Intent.EXTRA_TEXT).orEmpty()
         if (shared.contains("music.yandex.")) {
             linkInput = Regex("https?://\\S+").find(shared)?.value ?: shared
@@ -450,6 +471,29 @@ class MainActivity : ComponentActivity() {
             if (!yandexEnabled) status = "Включите модуль Яндекса в настройках"
             remoteView = 2
         }
+    }
+
+    private fun checkForUpdates() {
+        if (checkingUpdate) return
+        checkingUpdate = true
+        updateMessage = "Проверяем релизы GitHub…"
+        updateUrl = ""
+        Thread {
+            val result = runCatching { ReleaseChecker.latest() }
+            runOnUiThread {
+                if (isDestroyed || isFinishing) return@runOnUiThread
+                checkingUpdate = false
+                result.onSuccess { release ->
+                    val installed = packageManager.getPackageInfo(packageName, 0).versionName ?: "0.0.0"
+                    updateMessage = when {
+                        release == null -> "Опубликованных релизов пока нет. Установлена версия $installed."
+                        ReleaseChecker.isNewer(release.version, installed) -> "Доступна версия ${release.version}. Установлена $installed."
+                        else -> "Установлена актуальная версия $installed."
+                    }
+                    if (release != null && ReleaseChecker.isNewer(release.version, installed)) updateUrl = release.pageUrl
+                }.onFailure { updateMessage = "Не удалось проверить обновления: ${it.message ?: "ошибка сети"}" }
+            }
+        }.start()
     }
 
     private fun refreshLibrary() {
@@ -2269,6 +2313,12 @@ class MainActivity : ComponentActivity() {
                 if (yandexEnabled) SettingLink("Яндекс Музыка", "Качество загрузки и любимые треки", 5)
                 if (videoEnabled) SettingLink("Видео", "Жесты и уровни яркости и громкости", 8)
                 SettingLink("Аккаунт", "Подключение Яндекс Музыки", 6)
+                Spacer(Modifier.height(16.dp))
+                TextButton(onClick = ::checkForUpdates, enabled = !checkingUpdate) { Text("Проверить обновление") }
+                if (updateMessage.isNotBlank()) Text(updateMessage, style = MaterialTheme.typography.bodySmall)
+                if (updateUrl.isNotBlank()) TextButton(onClick = {
+                    startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(updateUrl)))
+                }) { Text("Открыть релиз на GitHub") }
             } else {
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                     TextButton(onClick = { settingsPage = if (settingsPage == 7) 4 else 0 }) { Text("←") }

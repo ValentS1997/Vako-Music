@@ -9,6 +9,8 @@ import android.net.Uri
 import android.os.Bundle
 import android.os.Build
 import android.media.MediaMetadataRetriever
+import android.provider.OpenableColumns
+import android.os.SystemClock
 import android.view.GestureDetector
 import android.view.Gravity
 import android.view.MotionEvent
@@ -42,6 +44,7 @@ class VideoPlayerActivity : ComponentActivity() {
         const val EXTRA_DURATION = "video_duration"
         const val EXTRA_PLAYLIST = "video_playlist"
         const val EXTRA_START_POSITION = "video_start_position"
+        const val EXTRA_QUEUE = "video_queue"
     }
 
     private lateinit var player: ExoPlayer
@@ -55,6 +58,10 @@ class VideoPlayerActivity : ComponentActivity() {
     private lateinit var gestureOverlay: LinearLayout
     private var gestureMode = 0 // 0: none, 1: brightness, 2: volume, 3: seek
     private var seekPreview = 0L
+    private var seekStart = 0L
+    private var seekWasPlaying = false
+    private var lastSeekApplied = -1L
+    private var lastSeekAt = 0L
     private var frameDurationMs = 33L
     private var zoom = 1f
     private var panX = 0f
@@ -70,6 +77,8 @@ class VideoPlayerActivity : ComponentActivity() {
     private var selectedSpeed = 1f
     private var playlistItems: List<String> = emptyList()
     private var playlistIndex = -1
+    private lateinit var previousButton: TextView
+    private lateinit var nextButton: TextView
     private val preferences by lazy { getSharedPreferences("vako_video", MODE_PRIVATE) }
     private val subtitlePicker = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) {
@@ -84,10 +93,11 @@ class VideoPlayerActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         videoUri = intent.data ?: run { finish(); return }
         requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_FULL_SENSOR
-        intent.getStringExtra(EXTRA_PLAYLIST)?.let { name ->
+        playlistItems = intent.getStringArrayListExtra(EXTRA_QUEUE).orEmpty()
+        if (playlistItems.isEmpty()) intent.getStringExtra(EXTRA_PLAYLIST)?.let { name ->
             playlistItems = VideoPlaylistStore(this).get(name)?.items.orEmpty()
-            playlistIndex = playlistItems.indexOf(videoUri.toString())
         }
+        playlistIndex = playlistItems.indexOf(videoUri.toString())
         window.decorView.systemUiVisibility = View.SYSTEM_UI_FLAG_FULLSCREEN or View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or
             View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY or View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN or View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
         window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
@@ -157,14 +167,26 @@ class VideoPlayerActivity : ComponentActivity() {
                 if (gestureMode == 0) {
                     gestureMode = if (kotlin.math.abs(e2.x - e1.x) > kotlin.math.abs(e2.y - e1.y) * 1.2f) 3
                         else if (e1.x < playerView.width / 2f) 1 else 2
-                    seekPreview = player.currentPosition
+                    seekStart = player.currentPosition
+                    seekPreview = seekStart
+                    if (gestureMode == 3) {
+                        seekWasPlaying = player.isPlaying
+                        player.pause()
+                        lastSeekApplied = -1L
+                    }
                 }
                 if (gestureMode == 3) {
                     val duration = player.duration.takeIf { it > 0 } ?: return false
-                    // One screen spans 20 seconds: roughly one frame per pixel on a 30 fps phone display.
-                    val delta = (-distanceX / playerView.width.coerceAtLeast(1) * 20_000).toLong()
-                    seekPreview = (seekPreview + delta).coerceIn(0, duration)
-                    val snapped = (seekPreview / frameDurationMs * frameDurationMs).coerceIn(0, duration)
+                    val pixelsPerFrame = 4f * resources.displayMetrics.density
+                    val frameDelta = ((e2.x - e1.x) / pixelsPerFrame).toLong()
+                    val snapped = (seekStart + frameDelta * frameDurationMs).coerceIn(0, duration)
+                    seekPreview = snapped
+                    val now = SystemClock.uptimeMillis()
+                    if (snapped != lastSeekApplied && now - lastSeekAt >= 35) {
+                        player.seekTo(snapped)
+                        lastSeekApplied = snapped
+                        lastSeekAt = now
+                    }
                     showLevel("${VideoStore.formatDuration(snapped)} / ${VideoStore.formatDuration(duration)} · кадр ≈${snapped / frameDurationMs}",
                         (snapped * 100 / duration).toInt())
                 } else if (gestureMode == 1) {
@@ -201,9 +223,10 @@ class VideoPlayerActivity : ComponentActivity() {
                 }
                 if (event.actionMasked == MotionEvent.ACTION_UP || event.actionMasked == MotionEvent.ACTION_CANCEL) {
                     if (gestureMode == 3 && event.actionMasked == MotionEvent.ACTION_UP) {
-                        val target = seekPreview / frameDurationMs * frameDurationMs
-                        this@VideoPlayerActivity.player.seekTo(target)
+                        this@VideoPlayerActivity.player.seekTo(seekPreview)
+                        if (seekWasPlaying) this@VideoPlayerActivity.player.play()
                     }
+                    seekWasPlaying = false
                     val consumed = gestureMode != 0 || pinchActive
                     gestureMode = 0; pinchActive = false; gestureOverlay.visibility = View.GONE
                     if (consumed) return true
@@ -254,7 +277,7 @@ class VideoPlayerActivity : ComponentActivity() {
         }
         button("←") { finish() }
         titleView = TextView(this).apply {
-            text = intent.getStringExtra(EXTRA_TITLE) ?: "Видео"
+            text = intent.getStringExtra(EXTRA_TITLE) ?: videoTitle(videoUri)
             setTextColor(Color.WHITE)
             textSize = 14f
             maxLines = 1
@@ -325,6 +348,21 @@ class VideoPlayerActivity : ComponentActivity() {
             addView(playerView, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
             addView(gestureOverlay, FrameLayout.LayoutParams(260.dp, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.CENTER))
         }
+        fun navigationButton(label: String, description: String, gravity: Int, action: () -> Unit): TextView = TextView(this).apply {
+            text = label; textSize = 30f; setTextColor(Color.WHITE)
+            contentDescription = description
+            this.gravity = Gravity.CENTER
+            setBackgroundColor(0xAA172117.toInt())
+            setOnClickListener { action() }
+            videoContainer.addView(this, FrameLayout.LayoutParams(48.dp, 48.dp, gravity).apply { bottomMargin = 82.dp; marginStart = 24.dp; marginEnd = 24.dp })
+        }
+        previousButton = navigationButton("⏮", "Предыдущее видео", Gravity.BOTTOM or Gravity.START) {
+            if (playlistIndex > 0) switchVideo(playlistIndex - 1)
+        }
+        nextButton = navigationButton("⏭", "Следующее видео", Gravity.BOTTOM or Gravity.END) {
+            if (playlistIndex in 0 until playlistItems.lastIndex) switchVideo(playlistIndex + 1)
+        }
+        updateNavigationButtons()
         root.addView(videoContainer, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
         setContentView(root)
         val saved = intent.getLongExtra(EXTRA_START_POSITION, -1L).takeIf { it >= 0 }
@@ -360,11 +398,21 @@ class VideoPlayerActivity : ComponentActivity() {
         savePosition()
         playlistIndex = index
         videoUri = Uri.parse(playlistItems[index])
-        titleView.text = contentResolver.query(videoUri, arrayOf(android.provider.MediaStore.MediaColumns.DISPLAY_NAME), null, null, null)
-            ?.use { if (it.moveToFirst()) it.getString(0) else null } ?: "Видео"
+        titleView.text = videoTitle(videoUri)
         subtitleUri = null
         zoom = 1f; panX = 0f; panY = 0f; applyZoom()
         prepare(preferences.getLong(videoUri.toString(), 0L))
+        updateNavigationButtons()
+    }
+
+    private fun videoTitle(uri: Uri): String = runCatching {
+        contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)
+            ?.use { if (it.moveToFirst()) it.getString(0) else null }
+    }.getOrNull() ?: uri.lastPathSegment ?: "Видео"
+
+    private fun updateNavigationButtons() {
+        previousButton.visibility = if (playlistIndex > 0) View.VISIBLE else View.GONE
+        nextButton.visibility = if (playlistIndex in 0 until playlistItems.lastIndex) View.VISIBLE else View.GONE
     }
 
     private fun showLevel(label: String, progress: Int) {
