@@ -8,7 +8,13 @@ import java.util.concurrent.atomic.AtomicReference
 import java.io.File
 
 class HttpTest {
-    private fun respond(headers: String, body: ByteArray, requests: Int = 2, test: (String) -> Unit) {
+    private fun respond(
+        headers: String,
+        body: ByteArray,
+        requests: Int = 2,
+        status: String = "200 OK",
+        test: (String) -> Unit,
+    ) {
         ServerSocket(0).use { server ->
             val error = AtomicReference<Throwable?>()
             val worker = Thread {
@@ -18,7 +24,7 @@ class HttpTest {
                             val reader = socket.getInputStream().bufferedReader()
                             while (!reader.readLine().isNullOrEmpty()) { }
                             socket.getOutputStream().apply {
-                                write(("HTTP/1.1 200 OK\r\n" + headers + "\r\n\r\n").toByteArray())
+                                write(("HTTP/1.1 $status\r\n" + headers + "\r\n\r\n").toByteArray())
                                 write(body)
                                 flush()
                             }
@@ -80,6 +86,18 @@ class HttpTest {
             respond("Connection: close", ByteArray(20), requests = 1) { url ->
                 assertThrows(java.io.IOException::class.java) {
                     Http.downloadToFile(url, file, maxBytes = 8)
+                }
+            }
+        } finally { file.delete() }
+    }
+
+    @Test fun partialContentIsNotPublishedAsACompleteTrack() {
+        val file = File.createTempFile("http-download", ".part")
+        try {
+            respond("Content-Length: 2", byteArrayOf(1, 2), requests = 1,
+                status = "206 Partial Content") { url ->
+                assertThrows(Http.HttpError::class.java) {
+                    Http.downloadToFile(url, file)
                 }
             }
         } finally { file.delete() }

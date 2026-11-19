@@ -29,7 +29,7 @@ object Http {
                         ?: throw IOException("Перенаправление без адреса")
                     current = URL(URL(current), location).toString()
                 } else {
-                    if (code !in 200..299) throw HttpError(code, "")
+                    if (code != HttpURLConnection.HTTP_OK) throw HttpError(code, "")
                     val total = connection.contentLengthLong
                     if (total > maxBytes) throw IOException("Аудиофайл превышает лимит 512 МБ")
                     var read = 0L
@@ -125,7 +125,7 @@ object Http {
         val c = open(current, null)
         try {
             val code = c.responseCode
-            if (code !in 200..299) throw HttpError(code, "")
+            if (code != HttpURLConnection.HTTP_OK) throw HttpError(code, "")
             val total = c.contentLengthLong
             if (total > maxBytes) throw DownloadSizeException(maxBytes)
             if (total in 1..Int.MAX_VALUE) {
