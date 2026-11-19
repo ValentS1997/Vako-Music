@@ -54,15 +54,35 @@ object FlacRemux {
                 (b[o + 3].toInt() and 0xff)
     }
 
+    private fun boxEnd(b: Bytes, signatureIndex: Int): Long {
+        val start = signatureIndex - 4
+        val rawSize = rd32(b, start).toLong() and 0xffffffffL
+        val size = if (rawSize == 1L) {
+            ((rd32(b, signatureIndex + 4).toLong() and 0xffffffffL) shl 32) or
+                (rd32(b, signatureIndex + 8).toLong() and 0xffffffffL)
+        } else rawSize
+        return start.toLong() + size
+    }
+
+    /** Ищет только сигнатуры с корректным заголовком и границами MP4-бокса. */
     private fun findSig(b: Bytes, sig: String, from: Int = 0): Int {
         val s = sig.toByteArray(Charsets.US_ASCII)
-        var i = from
+        var i = maxOf(from, 4)
         while (i + s.size <= b.size) {
             var ok = true
             for (j in s.indices) {
                 if (b[i + j] != s[j]) { ok = false; break }
             }
-            if (ok) return i
+            if (ok) {
+                val start = i - 4
+                val rawSize = rd32(b, start).toLong() and 0xffffffffL
+                val boxSize = if (rawSize == 1L && fits(b, start.toLong(), 16)) {
+                    ((rd32(b, i + 4).toLong() and 0xffffffffL) shl 32) or
+                        (rd32(b, i + 8).toLong() and 0xffffffffL)
+                } else rawSize
+                if (boxSize >= (if (rawSize == 1L) 16 else 8) &&
+                    fits(b, start.toLong(), boxSize)) return i
+            }
             i++
         }
         return -1
@@ -85,7 +105,8 @@ object FlacRemux {
         val blockSize = ((b[si + 1].toInt() and 0xff) shl 16) or
                 ((b[si + 2].toInt() and 0xff) shl 8) or (b[si + 3].toInt() and 0xff)
         val end = si.toLong() + 4 + blockSize
-        if (blockSize != 34 || !fits(b, si.toLong(), 4L + blockSize)) return null
+        if (blockSize != 34 || !fits(b, si.toLong(), 4L + blockSize) ||
+            end > boxEnd(b, dfla)) return null
         val block = b.copy(si, end.toInt())
         // Тип 0 — это и есть STREAMINFO
         if ((block[0].toInt() and 0x7f) != 0) return null
@@ -111,7 +132,9 @@ object FlacRemux {
         val uniformSize = rd32(b, ds)
         val count = rd32(b, ds + 4)
         if (count !in 1..MAX_SAMPLES || uniformSize < 0) return null
-        if (!fits(b, ds.toLong() + 8, if (uniformSize == 0) count.toLong() * 4 else 0)) return null
+        if (!fits(b, ds.toLong() + 8, if (uniformSize == 0) count.toLong() * 4 else 0) ||
+            ds.toLong() + 8 + (if (uniformSize == 0) count.toLong() * 4 else 0) >
+            boxEnd(b, stszI)) return null
         val sizes = IntArray(count)
         if (uniformSize == 0) {
             for (j in 0 until count) sizes[j] = rd32(b, ds + 8 + j * 4)
@@ -125,7 +148,8 @@ object FlacRemux {
         if (stcoI >= 0) {
             ds = stcoI + 4 + 4
             val cc = rd32(b, ds)
-            if (cc !in 1..MAX_CHUNKS || !fits(b, ds.toLong() + 4, cc.toLong() * 4)) return null
+            if (cc !in 1..MAX_CHUNKS || !fits(b, ds.toLong() + 4, cc.toLong() * 4) ||
+                ds.toLong() + 4 + cc.toLong() * 4 > boxEnd(b, stcoI)) return null
             chunkOffsets = LongArray(cc)
             for (j in 0 until cc) chunkOffsets[j] = rd32(b, ds + 4 + j * 4).toLong() and 0xffffffffL
         } else {
@@ -133,7 +157,8 @@ object FlacRemux {
             if (co64I < 0) return null
             ds = co64I + 4 + 4
             val cc = rd32(b, ds)
-            if (cc !in 1..MAX_CHUNKS || !fits(b, ds.toLong() + 4, cc.toLong() * 8)) return null
+            if (cc !in 1..MAX_CHUNKS || !fits(b, ds.toLong() + 4, cc.toLong() * 8) ||
+                ds.toLong() + 4 + cc.toLong() * 8 > boxEnd(b, co64I)) return null
             chunkOffsets = LongArray(cc)
             for (j in 0 until cc) {
                 val hi = rd32(b, ds + 4 + j * 8).toLong() and 0xffffffffL
@@ -149,7 +174,8 @@ object FlacRemux {
         if (stscI < 0) return null
         ds = stscI + 4 + 4
         val sc = rd32(b, ds)
-        if (sc !in 1..MAX_CHUNKS || !fits(b, ds.toLong() + 4, sc.toLong() * 12)) return null
+        if (sc !in 1..MAX_CHUNKS || !fits(b, ds.toLong() + 4, sc.toLong() * 12) ||
+            ds.toLong() + 4 + sc.toLong() * 12 > boxEnd(b, stscI)) return null
         val firstChunk = IntArray(sc)
         val samplesPerChunk = IntArray(sc)
         for (j in 0 until sc) {
