@@ -96,6 +96,7 @@ object VideoModule {
         var playlistPicker by remember { mutableStateOf<List<LocalVideo>?>(null) }
         var pendingWrite by remember { mutableStateOf<Pair<List<VideoEdit>, String>?>(null) }
         var failedWrite by remember { mutableStateOf<Pair<List<VideoEdit>, String>?>(null) }
+        var failedCopy by remember { mutableStateOf<Triple<List<LocalVideo>, String, String>?>(null) }
         var detail by remember { mutableStateOf<LocalVideo?>(null) }
         var newPlaylistItems by remember { mutableStateOf<List<String>>(emptyList()) }
         var pendingPlaylistDelete by remember { mutableStateOf<String?>(null) }
@@ -202,17 +203,30 @@ object VideoModule {
             3 -> list.sortedByDescending { it.sizeBytes }
             else -> list.sortedByDescending { it.addedSeconds }
         }
+        fun copyVideos(items: List<LocalVideo>, volume: String, path: String) {
+            failedCopy = null
+            scope.launch {
+                try {
+                    val report = withContext(Dispatchers.IO) {
+                        VideoMediaManager.copy(context, items, volume, path)
+                    }
+                    failedCopy = if (report.failed.isEmpty()) null else Triple(report.failed, volume, path)
+                    error = "Скопировано: ${report.copied} из ${items.size}" +
+                        if (report.failed.isEmpty()) "" else ". Не скопированы: " +
+                            report.failed.take(3).joinToString { it.name }
+                    selectedUris = emptySet()
+                    refresh++
+                } catch (exception: Exception) {
+                    error = exception.localizedMessage ?: "Ошибка копирования"
+                }
+            }
+        }
         fun applyTarget(action: VideoDestination, volume: String, path: String) {
             try {
                 val clean = path.trim('/')
                 require(clean.isNotEmpty() && clean.split('/').all { it.isNotBlank() && it !in listOf(".", "..") }) { "Укажите папку назначения" }
                 when (action.mode) {
-                    "copy" -> scope.launch {
-                        try {
-                            val count = withContext(Dispatchers.IO) { VideoMediaManager.copy(context, action.videos, volume, clean) }
-                            error = "Скопировано: $count"; selectedUris = emptySet(); refresh++
-                        } catch (exception: Exception) { error = exception.localizedMessage ?: "Ошибка копирования" }
-                    }
+                    "copy" -> copyVideos(action.videos, volume, clean)
                     "move" -> write(VideoMediaManager.move(action.videos, volume, clean), "Перемещено")
                     "move_folder" -> {
                         require(action.folderVolume == volume) { "Папку можно переместить только на том же накопителе" }
@@ -270,6 +284,11 @@ object VideoModule {
             failedWrite?.let { (edits, label) ->
                 TextButton(onClick = { write(edits, label) }) {
                     Text("Повторить только неуспешные (${edits.size})")
+                }
+            }
+            failedCopy?.let { (items, volume, path) ->
+                TextButton(onClick = { copyVideos(items, volume, path) }) {
+                    Text("Повторить копирование (${items.size})")
                 }
             }
             if (!allowed) {

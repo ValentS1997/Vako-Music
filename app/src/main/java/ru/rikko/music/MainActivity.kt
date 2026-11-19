@@ -318,7 +318,12 @@ class MainActivity : ComponentActivity() {
                 durationMs = if (service.prepared) service.player?.duration ?: 0 else 0
             }
         }
-        override fun onServiceDisconnected(name: ComponentName?) { playbackService = null }
+        override fun onServiceDisconnected(name: ComponentName?) {
+            playbackService = null
+            sleepDeadline = 0L
+            sleepRemainingMs = 0L
+            playing = false
+        }
     }
     private var cover by mutableStateOf<ImageBitmap?>(null)
     private var equalizer: Equalizer? = null
@@ -1067,8 +1072,12 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun startSleepTimer(minutes: Int) {
-        playbackService?.setSleepTimer(minutes)
-        sleepDeadline = playbackService?.sleepDeadline ?: 0L
+        val service = playbackService ?: run {
+            status = "Сервис воспроизведения ещё запускается"
+            return
+        }
+        service.setSleepTimer(minutes)
+        sleepDeadline = service.sleepDeadline
         sleepRemainingMs = (sleepDeadline - SystemClock.elapsedRealtime()).coerceAtLeast(0L)
     }
 
