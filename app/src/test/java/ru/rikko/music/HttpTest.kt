@@ -73,4 +73,15 @@ class HttpTest {
             }
         } finally { file.delete() }
     }
+
+    @Test fun streamedDownloadRejectsUnknownLengthAtTheLimit() {
+        val file = File.createTempFile("http-download", ".part")
+        try {
+            respond("Connection: close", ByteArray(20), requests = 1) { url ->
+                assertThrows(java.io.IOException::class.java) {
+                    Http.downloadToFile(url, file, maxBytes = 8)
+                }
+            }
+        } finally { file.delete() }
+    }
 }
