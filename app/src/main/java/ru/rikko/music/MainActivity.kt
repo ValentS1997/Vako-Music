@@ -752,6 +752,14 @@ class MainActivity : ComponentActivity() {
         val edits = pendingMediaEdits
         val description = pendingMediaDescription
         backgroundTask {
+            val planError = MediaEdits.validatePlan(contentResolver, edits)
+            if (planError != null) {
+                postIfActive {
+                    pendingMediaEdits = emptyList()
+                    status = planError
+                }
+                return@backgroundTask
+            }
             val report = BatchOperations.run(edits) { edit ->
                 contentResolver.update(edit.uri, edit.values(), null, null) > 0
             }
