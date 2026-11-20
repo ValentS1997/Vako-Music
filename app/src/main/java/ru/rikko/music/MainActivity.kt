@@ -165,6 +165,7 @@ class MainActivity : ComponentActivity() {
     private var saveQueueName by mutableStateOf("")
     private var saveQueueError by mutableStateOf("")
     private var pendingDeleteQueueName by mutableStateOf("")
+    private var pendingDeleteRemotePlaylist by mutableStateOf<MusicRepository.UserPlaylist?>(null)
     private var queueRestored by mutableStateOf(false)
     private var yandexEnabled by mutableStateOf(true)
     private var videoEnabled by mutableStateOf(true)
@@ -806,6 +807,28 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private fun deleteOwnPlaylist(item: MusicRepository.UserPlaylist) {
+        if (busy || token.isBlank()) return
+        busy = true
+        status = "Удаляем «${item.title}»…"
+        backgroundTask {
+            try {
+                MusicRepository.deletePlaylist(item, token)
+                postIfActive {
+                    ownPlaylists = ownPlaylists.filterNot { it.kind == item.kind && it.owner == item.owner }
+                    if (selectedRemotePlaylist?.kind == item.kind) {
+                        selectedRemotePlaylist = null
+                        remotePlaylistTracks = emptyList()
+                    }
+                    busy = false
+                    status = "Плейлист «${item.title}» удалён из Яндекс Музыки"
+                }
+            } catch (e: Exception) {
+                postIfActive { busy = false; status = "Не удалось удалить плейлист: ${e.message ?: "ошибка"}" }
+            }
+        }
+    }
+
     private fun removeOwnTrack(position: Int) {
         val item = selectedRemotePlaylist ?: return
         busy = true
@@ -939,10 +962,28 @@ class MainActivity : ComponentActivity() {
 
     private fun downloadOwnPlaylist() {
         val item = selectedRemotePlaylist ?: return
-        downloadTracks(remotePlaylistTracks, item.title)
+        downloadTracks(remotePlaylistTracks, item.title, item.title)
     }
 
-    private fun downloadTracks(tracks: List<Track>, title: String) {
+    private fun downloadOwnPlaylist(item: MusicRepository.UserPlaylist) {
+        if (busy || bulkDownloading) return
+        busy = true
+        status = "Загружаем треки «${item.title}»…"
+        backgroundTask {
+            try {
+                val tracks = MusicRepository.playlistTracks(item, token)
+                postIfActive {
+                    busy = false
+                    if (tracks.isEmpty()) status = "Плейлист «${item.title}» пуст"
+                    else downloadTracks(tracks, item.title, item.title)
+                }
+            } catch (e: Exception) {
+                postIfActive { busy = false; status = "Не удалось загрузить плейлист: ${e.message ?: "ошибка"}" }
+            }
+        }
+    }
+
+    private fun downloadTracks(tracks: List<Track>, title: String, playlistFolder: String? = null) {
         if (tracks.isEmpty() || bulkDownloading) return
         bulkDownloading = true
         cancelBulk = false
@@ -955,7 +996,8 @@ class MainActivity : ComponentActivity() {
             for ((index, track) in tracks.withIndex()) {
                 if (cancelBulk) break
                 try {
-                    val result = downloader.downloadTrack(track, token, downloadQuality, wantNativeFlac = true, wantLyrics = false)
+                    val result = downloader.downloadTrack(track, token, downloadQuality, wantNativeFlac = true,
+                        wantLyrics = false, playlistFolder = playlistFolder)
                     result.uri?.let(libraryStore::addUri)
                 } catch (_: Exception) { failed++ }
                 postIfActive { bulkDone = index + 1; status = "Скачиваем «$title»: $bulkDone/${tracks.size}" }
@@ -1455,7 +1497,7 @@ class MainActivity : ComponentActivity() {
             if (showNowPlaying) NowPlayingScreen(Modifier.fillMaxSize().padding(padding))
             else Column(Modifier.fillMaxSize().padding(padding).padding(horizontal = 14.dp)) {
                 Row(Modifier.fillMaxWidth().height(52.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Text("VAKO MUSIC", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                    Text("VAKO PLAYER", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
                     Spacer(Modifier.weight(1f))
                     Text(
                         when { showQueue -> "ОЧЕРЕДЬ"; showSound -> "ЗВУК"; else -> when (activeTab) {
@@ -1490,6 +1532,17 @@ class MainActivity : ComponentActivity() {
         if (showSavedQueues) SavedQueuesDialog()
         if (showClearQueue) ClearQueueDialog()
         if (pendingDeleteQueueName.isNotBlank()) DeleteSavedQueueDialog()
+        pendingDeleteRemotePlaylist?.let { playlist ->
+            AlertDialog(
+                onDismissRequest = { pendingDeleteRemotePlaylist = null },
+                title = { Text("Удалить плейлист?") },
+                text = { Text("«${playlist.title}» будет удалён из вашего аккаунта Яндекс Музыки. Уже скачанные файлы останутся на телефоне.") },
+                confirmButton = {
+                    TextButton(onClick = { pendingDeleteRemotePlaylist = null; deleteOwnPlaylist(playlist) }) { Text("Удалить") }
+                },
+                dismissButton = { TextButton(onClick = { pendingDeleteRemotePlaylist = null }) { Text("Отмена") } }
+            )
+        }
     }
 
     private fun closeNowPlaying() {
@@ -1823,7 +1876,7 @@ class MainActivity : ComponentActivity() {
             LazyColumn { items(selected.tracks, key = ::trackKey) { track -> TrackRow(track, selected.tracks) } }
         } else {
             Text("Автоподборки", fontWeight = FontWeight.SemiBold)
-            Text("На основе любимых треков. До 10 подборок по 100 треков; хранятся только в Vako Music.",
+            Text("На основе любимых треков. До 10 подборок по 100 треков; хранятся только в Vako Player.",
                 style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             OutlinedTextField(value = autoCollectionName, onValueChange = { autoCollectionName = it },
                 label = { Text("Название новой подборки") }, singleLine = true, modifier = Modifier.fillMaxWidth())
@@ -1876,6 +1929,7 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    @OptIn(ExperimentalFoundationApi::class)
     @Composable
     private fun OwnPlaylistsScreen() {
         val item = selectedRemotePlaylist
@@ -1919,15 +1973,27 @@ class MainActivity : ComponentActivity() {
                     }
                 }
                 items(ownPlaylists, key = { it.kind }) { listItem ->
+                    var menuOpen by remember(listItem.owner, listItem.kind) { mutableStateOf(false) }
                     Row(Modifier.fillMaxWidth().padding(vertical = 2.dp).heightIn(min = 56.dp)
                         .vakoPanel(shape = VakoUi.row)
-                        .clickable { openOwnPlaylist(listItem) }.padding(horizontal = 10.dp, vertical = 6.dp),
+                        .combinedClickable(onClick = { openOwnPlaylist(listItem) }, onLongClick = { menuOpen = true })
+                        .padding(horizontal = 10.dp, vertical = 6.dp),
                         verticalAlignment = Alignment.CenterVertically) {
                         Column(Modifier.weight(1f)) {
                             Text(listItem.title, maxLines = 1, overflow = TextOverflow.Ellipsis, fontWeight = FontWeight.SemiBold)
                             Text(trackCountLabel(listItem.count), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
-                        Text("›", color = MaterialTheme.colorScheme.primary)
+                        Box {
+                            ActionIcon("⋮", "Действия с плейлистом ${listItem.title}", { menuOpen = true })
+                            DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                                DropdownMenuItem(text = { Text("Скачать плейлист") }, enabled = !busy && !bulkDownloading,
+                                    onClick = { menuOpen = false; downloadOwnPlaylist(listItem) })
+                                DropdownMenuItem(text = { Text("Переименовать") }, enabled = !busy,
+                                    onClick = { menuOpen = false; openOwnPlaylist(listItem) })
+                                DropdownMenuItem(text = { Text("Удалить плейлист") }, enabled = !busy,
+                                    onClick = { menuOpen = false; pendingDeleteRemotePlaylist = listItem })
+                            }
+                        }
                     }
                 }
             }
@@ -2554,7 +2620,7 @@ class MainActivity : ComponentActivity() {
         LaunchedEffect(settingsPage) { scroll.scrollTo(0) }
         Column(Modifier.fillMaxSize().verticalScroll(scroll)) {
             if (settingsPage == 0) {
-                Text("Настройки Vako Music", style = MaterialTheme.typography.titleLarge)
+                Text("Настройки Vako Player", style = MaterialTheme.typography.titleLarge)
                 SettingLink("Разделы приложения", "Показывать только нужные вкладки", 1)
                 SettingLink("Медиатека", "Сортировка, имена файлов и действия с треками", 2)
                 SettingLink("Воспроизведение", "Повтор, перемешивание, таймер и эквалайзер", 3)
@@ -2673,7 +2739,7 @@ class MainActivity : ComponentActivity() {
                             if (enabled && prepared) startVisualizer()
                             else if (!enabled && !visualizerVisible) stopVisualizer()
                         }
-                        SettingSwitch("Не гасить экран", "Пока Vako Music воспроизводит трек на экране", keepScreenOn) { enabled ->
+                        SettingSwitch("Не гасить экран", "Пока Vako Player воспроизводит трек на экране", keepScreenOn) { enabled ->
                             keepScreenOn = enabled; appPreferences.setEnabled("keep_screen_on", enabled)
                         }
                     }

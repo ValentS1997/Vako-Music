@@ -269,7 +269,7 @@ class PlaybackService : Service() {
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
         return Notification.Builder(this, channelId)
             .setSmallIcon(android.R.drawable.ic_media_play)
-            .setContentTitle(title.ifBlank { "Vako Music" })
+            .setContentTitle(title.ifBlank { "Vako Player" })
             .setContentText(artist)
             .setContentIntent(open)
             .setVisibility(Notification.VISIBILITY_PUBLIC)

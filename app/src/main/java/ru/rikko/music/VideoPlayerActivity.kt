@@ -102,8 +102,8 @@ class VideoPlayerActivity : ComponentActivity() {
     private val hideControls = Runnable {
         if (!inPip && ::playerView.isInitialized) {
             controlsVisible = false
-            playerView.hideController()
             updateControls()
+            playerView.hideController()
         }
     }
     private val subtitlePicker = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
@@ -265,7 +265,8 @@ class VideoPlayerActivity : ComponentActivity() {
         }.apply {
             this.player = this@VideoPlayerActivity.player
             useController = true
-            controllerShowTimeoutMs = 3000
+            // One timer hides Media3 and our playlist buttons in the same frame.
+            controllerShowTimeoutMs = 0
             setShowNextButton(false)
             setShowPreviousButton(false)
             setBackgroundColor(Color.BLACK)
@@ -378,7 +379,7 @@ class VideoPlayerActivity : ComponentActivity() {
             text = label; textSize = 30f; setTextColor(chrome.accent)
             contentDescription = description
             this.gravity = Gravity.CENTER
-            background = chrome.panel(14.dp.toFloat(), active = true)
+            background = null
             setOnClickListener { action() }
             translationX = offset.dp.toFloat()
             videoContainer.addView(this, FrameLayout.LayoutParams(48.dp, 48.dp, Gravity.CENTER))
@@ -392,7 +393,7 @@ class VideoPlayerActivity : ComponentActivity() {
         updateNavigationButtons()
         root.addView(videoContainer, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
         setContentView(root)
-        chrome.tintMedia3(playerView, resources.displayMetrics.density)
+        chrome.tintMedia3(playerView)
         playerView.setControllerVisibilityListener(PlayerView.ControllerVisibilityListener { visibility ->
             controlsVisible = visibility == View.VISIBLE
             updateControls()
