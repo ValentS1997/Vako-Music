@@ -42,6 +42,7 @@
                 <data android:mimeType="video/*" />
             </intent-filter>
         </activity>
+        <receiver android:name=".VideoPipReceiver" android:exported="false" />
         <service android:name=".PlaybackService" android:exported="false" android:foregroundServiceType="mediaPlayback" />
     </application>
 </manifest>
