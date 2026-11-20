@@ -1365,12 +1365,15 @@ class MainActivity : ComponentActivity() {
             }
         }
         Scaffold(
+            modifier = Modifier.vakoBackdrop(),
+            containerColor = Color.Transparent,
+            contentColor = MaterialTheme.colorScheme.onBackground,
             bottomBar = {
                 if (!showNowPlaying) Column {
                     if (currentTitle.isNotBlank()) PlayerBar()
-                    HorizontalDivider(color = MaterialTheme.colorScheme.surfaceVariant)
-                    Surface(color = MaterialTheme.colorScheme.surface, shape = VakoUi.panel,
-                        modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp)) {
+                    HorizontalDivider(color = MaterialTheme.colorScheme.onSurface.copy(alpha = .10f))
+                    Surface(color = Color.Transparent, contentColor = MaterialTheme.colorScheme.onSurface, shape = VakoUi.panel,
+                        modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp).vakoPanel()) {
                         if (navigationVisible) {
                             val labels = mapOf(0 to "Медиатека", 1 to "Яндекс", 2 to "Видео", 3 to "Настройки")
                             val shortLabels = mapOf(0 to "Медиа", 1 to "Яндекс", 2 to "Видео", 3 to "Настр.")
@@ -1390,8 +1393,7 @@ class MainActivity : ComponentActivity() {
                                         Unit
                                     }
                                     Box(modifier = Modifier.weight(1f).fillMaxSize()
-                                        .background(if (activeTab == index) MaterialTheme.colorScheme.primaryContainer
-                                            else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f), VakoUi.row)
+                                        .vakoPanel(active = activeTab == index, shape = VakoUi.row)
                                         .semantics {
                                             contentDescription = labels[index].orEmpty()
                                             selected = activeTab == index
@@ -1832,7 +1834,7 @@ class MainActivity : ComponentActivity() {
             StatusLine()
             LazyColumn { items(autoCollections, key = { it.name }) { collection ->
                 Row(Modifier.fillMaxWidth().padding(vertical = 3.dp).heightIn(min = 60.dp)
-                    .clip(VakoUi.row).background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = .55f))
+                    .vakoPanel(shape = VakoUi.row)
                     .clickable {
                     selectedAutoCollection = collection
                     autoRenameInput = collection.name
@@ -1903,8 +1905,7 @@ class MainActivity : ComponentActivity() {
             StatusLine()
             LazyColumn(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 item(key = "liked") {
-                    Row(Modifier.fillMaxWidth().heightIn(min = 56.dp).clip(VakoUi.row)
-                        .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = .55f))
+                    Row(Modifier.fillMaxWidth().heightIn(min = 56.dp).vakoPanel(shape = VakoUi.row)
                         .clickable { openLikedTracks() }.padding(horizontal = 10.dp, vertical = 6.dp),
                         verticalAlignment = Alignment.CenterVertically) {
                         Text("♥", color = MaterialTheme.colorScheme.primary)
@@ -1919,7 +1920,7 @@ class MainActivity : ComponentActivity() {
                 }
                 items(ownPlaylists, key = { it.kind }) { listItem ->
                     Row(Modifier.fillMaxWidth().padding(vertical = 2.dp).heightIn(min = 56.dp)
-                        .clip(VakoUi.row).background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = .55f))
+                        .vakoPanel(shape = VakoUi.row)
                         .clickable { openOwnPlaylist(listItem) }.padding(horizontal = 10.dp, vertical = 6.dp),
                         verticalAlignment = Alignment.CenterVertically) {
                         Column(Modifier.weight(1f)) {
@@ -2175,8 +2176,8 @@ class MainActivity : ComponentActivity() {
             LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 items(playlistNames) { name ->
                     Surface(onClick = { selectedPlaylist = name; localRenameInput = name; selectedLocalUris = emptySet() },
-                        modifier = Modifier.fillMaxWidth(), shape = VakoUi.row,
-                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = .55f)) {
+                        modifier = Modifier.fillMaxWidth().vakoPanel(shape = VakoUi.row), shape = VakoUi.row,
+                        color = Color.Transparent, contentColor = MaterialTheme.colorScheme.onSurface) {
                         Row(Modifier.padding(horizontal = 12.dp, vertical = 14.dp), verticalAlignment = Alignment.CenterVertically) {
                             Text(name, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
                             Text("›", color = MaterialTheme.colorScheme.primary)
@@ -2288,8 +2289,7 @@ class MainActivity : ComponentActivity() {
                 items(childFolders, key = { "folder:${it.key}" }) { child ->
                     var folderMenuOpen by remember(child.key) { mutableStateOf(false) }
                     Row(
-                        Modifier.fillMaxWidth().heightIn(min = 56.dp).clip(VakoUi.row)
-                            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = .55f))
+                        Modifier.fillMaxWidth().heightIn(min = 56.dp).vakoPanel(shape = VakoUi.row)
                             .padding(start = 10.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
@@ -2430,8 +2430,7 @@ class MainActivity : ComponentActivity() {
 
     @Composable
     private fun BrowseGroupRow(group: BrowseGroup, open: () -> Unit) {
-        Row(Modifier.fillMaxWidth().heightIn(min = 58.dp).clip(VakoUi.row)
-            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = .55f))
+        Row(Modifier.fillMaxWidth().heightIn(min = 58.dp).vakoPanel(shape = VakoUi.row)
             .clickable(onClick = open).padding(horizontal = 10.dp), verticalAlignment = Alignment.CenterVertically) {
             Text("♫", color = MaterialTheme.colorScheme.primary)
             Spacer(Modifier.width(10.dp))
@@ -2476,9 +2475,7 @@ class MainActivity : ComponentActivity() {
         val selected = song.uri.toString() in selectedLocalUris
         Column(Modifier.padding(vertical = 2.dp)) {
             Row(Modifier.fillMaxWidth().heightIn(min = if (compactRows) 56.dp else 72.dp)
-                .clip(VakoUi.row)
-                .background(if (selected) MaterialTheme.colorScheme.primaryContainer
-                    else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = .45f))
+                .vakoPanel(active = selected, shape = VakoUi.row)
                 .combinedClickable(
                 onClick = { if (selectedLocalUris.isNotEmpty()) toggleLocalSelection(song) else tapLocal(song, source) },
                 onLongClick = { toggleLocalSelection(song) }
@@ -2740,8 +2737,7 @@ class MainActivity : ComponentActivity() {
 
     @Composable
     private fun SettingLink(title: String, description: String, page: Int) {
-        Row(Modifier.fillMaxWidth().padding(vertical = 3.dp).clip(VakoUi.row)
-            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = .55f))
+        Row(Modifier.fillMaxWidth().padding(vertical = 3.dp).vakoPanel(shape = VakoUi.row)
             .clickable { settingsPage = page }.padding(horizontal = 14.dp, vertical = 12.dp),
             verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
@@ -2861,8 +2857,7 @@ class MainActivity : ComponentActivity() {
 
     @Composable
     private fun SettingSwitch(title: String, description: String, checked: Boolean, onChange: (Boolean) -> Unit) {
-        Row(Modifier.fillMaxWidth().padding(vertical = 3.dp).clip(VakoUi.row)
-            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = .55f))
+        Row(Modifier.fillMaxWidth().padding(vertical = 3.dp).vakoPanel(shape = VakoUi.row)
             .clickable { onChange(!checked) }.padding(horizontal = 14.dp, vertical = 8.dp),
             verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
@@ -2983,9 +2978,8 @@ class MainActivity : ComponentActivity() {
         if (queue.isEmpty()) Text("Очередь пуста", color = MaterialTheme.colorScheme.onSurfaceVariant)
         LazyColumn(state = listState, verticalArrangement = Arrangement.spacedBy(4.dp)) {
             itemsIndexed(queue, key = { index, _ -> index }) { index, item ->
-                Row(Modifier.fillMaxWidth().heightIn(min = 64.dp).clip(VakoUi.row)
-                    .background(if (index == queueIndex || index == draggingIndex) MaterialTheme.colorScheme.primaryContainer
-                        else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = .45f))
+                Row(Modifier.fillMaxWidth().heightIn(min = 64.dp)
+                    .vakoPanel(active = index == queueIndex || index == draggingIndex, shape = VakoUi.row)
                     .padding(start = 6.dp), verticalAlignment = Alignment.CenterVertically) {
                     Box(Modifier.width(30.dp).height(56.dp).pointerInput(index, queue.size) {
                         var draggedItem: QueueItem? = null
@@ -3030,8 +3024,11 @@ class MainActivity : ComponentActivity() {
                             maxLines = 1, overflow = TextOverflow.Ellipsis,
                             style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
-                    if (item is QueueItem.Local && item.song.durationMs > 0) Text(LibraryBrowse.duration(item.song.durationMs),
-                        style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    if (item is QueueItem.Local && item.song.durationMs > 0) {
+                        Spacer(Modifier.width(8.dp))
+                        Text(LibraryBrowse.duration(item.song.durationMs),
+                            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
                     TextButton(onClick = { moveQueueItem(index, -1) }, enabled = index > 0,
                         modifier = Modifier.semantics { contentDescription = "Поднять трек ${index + 1} в очереди" }) {
                         Text("↑")
@@ -3118,7 +3115,9 @@ class MainActivity : ComponentActivity() {
     private fun ActionIcon(symbol: String, label: String, onClick: () -> Unit,
                            enabled: Boolean = true, selected: Boolean = false, large: Boolean = false) {
         IconButton(onClick = onClick, enabled = enabled,
-            modifier = Modifier.width(if (large) 50.dp else 48.dp).height(48.dp).semantics { contentDescription = label }) {
+            modifier = Modifier.width(if (large) 50.dp else 48.dp).height(48.dp)
+                .then(if (selected) Modifier.vakoPanel(active = true, shape = VakoUi.row) else Modifier)
+                .semantics { contentDescription = label }) {
             Text(symbol, fontSize = if (large) 34.sp else 27.sp, lineHeight = if (large) 35.sp else 28.sp,
                 color = if (!enabled) MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = .35f)
                     else if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
@@ -3132,9 +3131,7 @@ class MainActivity : ComponentActivity() {
         val selected = selectedRemoteTracks.any { trackKey(it) == trackKey(track) }
         Column(Modifier.padding(vertical = 2.dp)) {
             Row(Modifier.fillMaxWidth().heightIn(min = if (compactRows) 58.dp else 74.dp)
-                .clip(VakoUi.row)
-                .background(if (selected) MaterialTheme.colorScheme.primaryContainer
-                    else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = .45f))
+                .vakoPanel(active = selected, shape = VakoUi.row)
                 .combinedClickable(
                 onClick = { if (selectedRemoteTracks.isNotEmpty()) toggleRemoteSelection(track) else tapRemote(track, source) },
                 onLongClick = { toggleRemoteSelection(track) }
@@ -3206,8 +3203,8 @@ class MainActivity : ComponentActivity() {
     @Composable
     private fun PlayerBar() {
         var pendingSeek by remember(queueIndex, currentTitle) { mutableStateOf<Float?>(null) }
-        Surface(color = MaterialTheme.colorScheme.surfaceVariant, shape = VakoUi.panel,
-            modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp), tonalElevation = 1.dp) {
+        Surface(color = Color.Transparent, contentColor = MaterialTheme.colorScheme.onSurface, shape = VakoUi.panel,
+            modifier = Modifier.padding(horizontal = 6.dp, vertical = 3.dp).vakoPanel(active = true)) {
             Column {
             Row(Modifier.fillMaxWidth().height(66.dp).clickable { showNowPlaying = true }.padding(horizontal = 6.dp),
                 verticalAlignment = Alignment.CenterVertically) {
@@ -3278,8 +3275,7 @@ class MainActivity : ComponentActivity() {
             }
             Spacer(Modifier.height(8.dp))
             Box(
-                Modifier.fillMaxWidth().weight(1f).clip(VakoUi.shapes.extraLarge)
-                    .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = .35f))
+                Modifier.fillMaxWidth().weight(1f).vakoPanel(shape = VakoUi.shapes.extraLarge)
                     .pointerInput(visualizerVisible, visualizerStyle) {
                     var dragged = 0f
                     detectHorizontalDragGestures(
