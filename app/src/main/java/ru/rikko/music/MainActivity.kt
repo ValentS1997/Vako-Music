@@ -92,6 +92,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.geometry.Offset
@@ -102,6 +104,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.onClick
 import androidx.core.content.ContextCompat
@@ -457,7 +460,7 @@ class MainActivity : ComponentActivity() {
                     isAppearanceLightNavigationBars = false
                 }
             }
-            MaterialTheme(colorScheme = palette.scheme) {
+            MaterialTheme(colorScheme = palette.scheme, shapes = VakoUi.shapes) {
                 App()
             }
         }
@@ -1366,9 +1369,13 @@ class MainActivity : ComponentActivity() {
                 if (!showNowPlaying) Column {
                     if (currentTitle.isNotBlank()) PlayerBar()
                     HorizontalDivider(color = MaterialTheme.colorScheme.surfaceVariant)
-                    Surface(color = MaterialTheme.colorScheme.surface) {
+                    Surface(color = MaterialTheme.colorScheme.surface, shape = VakoUi.panel,
+                        modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp)) {
                         if (navigationVisible) {
                             val labels = mapOf(0 to "Медиатека", 1 to "Яндекс", 2 to "Видео", 3 to "Настройки")
+                            val shortLabels = mapOf(0 to "Медиа", 1 to "Яндекс", 2 to "Видео", 3 to "Настр.")
+                            val useShortLabels = LocalDensity.current.fontScale >= 1.25f ||
+                                LocalConfiguration.current.screenWidthDp < 390
                             val visible = moduleOrder.filter { it == 0 || it == 3 ||
                                 (it == 1 && yandexEnabled) || (it == 2 && videoEnabled) }
                             Row(Modifier.fillMaxWidth().height(52.dp), verticalAlignment = Alignment.CenterVertically,
@@ -1380,19 +1387,20 @@ class MainActivity : ComponentActivity() {
                                         showQueue = false; showSound = false
                                         selectedLocalUris = emptySet(); selectedRemoteTracks = emptyList()
                                         navigationTick++
+                                        Unit
                                     }
                                     Box(modifier = Modifier.weight(1f).fillMaxSize()
-                                        .background(if (activeTab == index) MaterialTheme.colorScheme.primary.copy(alpha = 0.14f)
-                                            else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f), RoundedCornerShape(8.dp))
+                                        .background(if (activeTab == index) MaterialTheme.colorScheme.primaryContainer
+                                            else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f), VakoUi.row)
                                         .semantics {
                                             contentDescription = labels[index].orEmpty()
+                                            selected = activeTab == index
                                             onClick { openModule(); true }
                                         }
                                         .pointerInput(index, moduleOrder, visible) {
                                             awaitEachGesture {
                                                 val down = awaitFirstDown(requireUnconsumed = false)
                                                 var dragging = false
-                                                var movedBeforeHold = false
                                                 while (true) {
                                                     val change = awaitPointerEvent().changes.firstOrNull { it.id == down.id } ?: break
                                                     val dx = change.position.x - down.position.x
@@ -1400,7 +1408,6 @@ class MainActivity : ComponentActivity() {
                                                     val held = change.uptimeMillis - down.uptimeMillis >= viewConfiguration.longPressTimeoutMillis
                                                     if (!held && (kotlin.math.abs(dx) > viewConfiguration.touchSlop ||
                                                                 kotlin.math.abs(dy) > viewConfiguration.touchSlop)) {
-                                                        movedBeforeHold = true
                                                         break
                                                     }
                                                     if (held && kotlin.math.abs(dx) > viewConfiguration.touchSlop) {
@@ -1421,13 +1428,14 @@ class MainActivity : ComponentActivity() {
                                                             }
                                                             draggedModule = null
                                                             navigationTick++
-                                                        } else if (!movedBeforeHold) openModule()
+                                                        }
                                                         break
                                                     }
                                                 }
                                             }
-                                        }, contentAlignment = Alignment.Center) {
-                                        Text(labels[index].orEmpty(),
+                                        }.clickable(onClick = openModule), contentAlignment = Alignment.Center) {
+                                        Text((if (useShortLabels) shortLabels else labels)[index].orEmpty(),
+                                            maxLines = 1, overflow = TextOverflow.Ellipsis,
                                             color = if (activeTab == index || draggedModule == index) MaterialTheme.colorScheme.primary
                                                 else MaterialTheme.colorScheme.onSurfaceVariant,
                                             fontWeight = if (activeTab == index) FontWeight.Bold else FontWeight.Normal)
@@ -1444,7 +1452,7 @@ class MainActivity : ComponentActivity() {
         ) { padding ->
             if (showNowPlaying) NowPlayingScreen(Modifier.fillMaxSize().padding(padding))
             else Column(Modifier.fillMaxSize().padding(padding).padding(horizontal = 14.dp)) {
-                Row(Modifier.fillMaxWidth().height(48.dp), verticalAlignment = Alignment.CenterVertically) {
+                Row(Modifier.fillMaxWidth().height(52.dp), verticalAlignment = Alignment.CenterVertically) {
                     Text("VAKO MUSIC", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
                     Spacer(Modifier.weight(1f))
                     Text(
@@ -1752,16 +1760,13 @@ class MainActivity : ComponentActivity() {
     private fun YandexScreen() {
         Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
             listOf("Поиск", "Мои плейлисты", "По ссылке", "Автоподборки").forEachIndexed { index, label ->
-                TextButton(onClick = {
+                VakoChip(label, remoteView == index, onClick = {
                     remoteView = index
                     selectedRemoteTracks = emptyList()
                     if (index == 1 && ownPlaylists.isEmpty() && !busy) loadOwnPlaylists()
-                }) {
-                    Text(label, color = if (remoteView == index) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
-                }
+                })
             }
         }
-        HorizontalDivider(color = MaterialTheme.colorScheme.surfaceVariant)
         Spacer(Modifier.height(8.dp))
         if (selectedRemoteTracks.isNotEmpty()) RemoteSelectionBar()
         when (remoteView) {
@@ -1780,9 +1785,16 @@ class MainActivity : ComponentActivity() {
                 TextButton(onClick = { selectedAutoCollection = null }) { Text("←") }
                 Text(selected.name, modifier = Modifier.weight(1f), fontWeight = FontWeight.SemiBold)
             }
-            Text("По любимым трекам · ${selected.tracks.size} треков · обновлено ${
-                if (selected.updatedAt > 0) java.text.DateFormat.getDateInstance().format(java.util.Date(selected.updatedAt)) else "ранее"
-            }", style = MaterialTheme.typography.bodySmall)
+            Surface(shape = VakoUi.panel, color = MaterialTheme.colorScheme.surfaceVariant,
+                modifier = Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(12.dp)) {
+                    Text(selected.name, fontWeight = FontWeight.SemiBold)
+                    Text("По любимым трекам · ${selected.tracks.size} треков · обновлено ${
+                        if (selected.updatedAt > 0) java.text.DateFormat.getDateInstance().format(java.util.Date(selected.updatedAt)) else "ранее"
+                    }", style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
             OutlinedTextField(value = autoRenameInput, onValueChange = { autoRenameInput = it },
                 label = { Text("Название подборки") }, singleLine = true, modifier = Modifier.fillMaxWidth())
             TextButton(onClick = {
@@ -1795,8 +1807,8 @@ class MainActivity : ComponentActivity() {
             }, enabled = autoRenameInput.trim().isNotBlank() && autoRenameInput.trim() != selected.name) {
                 Text("Переименовать")
             }
-            TextButton(onClick = { refreshAutoCollection(selected) }, enabled = !autoCollectionBusy) { Text("Обновить подборку") }
-            TextButton(onClick = { exportAutoCollection(selected) }, enabled = !autoCollectionBusy) {
+            Button(onClick = { refreshAutoCollection(selected) }, enabled = !autoCollectionBusy) { Text("Обновить подборку") }
+            FilledTonalButton(onClick = { exportAutoCollection(selected) }, enabled = !autoCollectionBusy) {
                 Text("Сохранить как плейлист Яндекс Музыки")
             }
             TextButton(onClick = {
@@ -1804,7 +1816,7 @@ class MainActivity : ComponentActivity() {
                 autoCollections = autoCollectionStore.all()
                 selectedAutoCollection = null
                 status = "Подборка удалена с устройства"
-            }) { Text("Удалить локальную подборку") }
+            }) { Text("Удалить локальную подборку", color = MaterialTheme.colorScheme.error) }
             StatusLine()
             LazyColumn { items(selected.tracks, key = ::trackKey) { track -> TrackRow(track, selected.tracks) } }
         } else {
@@ -1819,10 +1831,12 @@ class MainActivity : ComponentActivity() {
             }
             StatusLine()
             LazyColumn { items(autoCollections, key = { it.name }) { collection ->
-                Row(Modifier.fillMaxWidth().height(60.dp).clickable {
+                Row(Modifier.fillMaxWidth().padding(vertical = 3.dp).heightIn(min = 60.dp)
+                    .clip(VakoUi.row).background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = .55f))
+                    .clickable {
                     selectedAutoCollection = collection
                     autoRenameInput = collection.name
-                },
+                }.padding(horizontal = 12.dp),
                     verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {
                         Text(collection.name, fontWeight = FontWeight.SemiBold)
@@ -1830,7 +1844,6 @@ class MainActivity : ComponentActivity() {
                     }
                     Text("›", color = MaterialTheme.colorScheme.primary)
                 }
-                HorizontalDivider(color = MaterialTheme.colorScheme.surfaceVariant)
             } }
         }
     }
@@ -1890,7 +1903,9 @@ class MainActivity : ComponentActivity() {
             StatusLine()
             LazyColumn(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 item(key = "liked") {
-                    Row(Modifier.fillMaxWidth().height(56.dp).clickable { openLikedTracks() },
+                    Row(Modifier.fillMaxWidth().heightIn(min = 56.dp).clip(VakoUi.row)
+                        .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = .55f))
+                        .clickable { openLikedTracks() }.padding(horizontal = 10.dp, vertical = 6.dp),
                         verticalAlignment = Alignment.CenterVertically) {
                         Text("♥", color = MaterialTheme.colorScheme.primary)
                         Spacer(Modifier.width(12.dp))
@@ -1901,17 +1916,18 @@ class MainActivity : ComponentActivity() {
                         }
                         Text("›", color = MaterialTheme.colorScheme.primary)
                     }
-                    HorizontalDivider(color = MaterialTheme.colorScheme.surfaceVariant)
                 }
                 items(ownPlaylists, key = { it.kind }) { listItem ->
-                    Row(Modifier.fillMaxWidth().height(56.dp).clickable { openOwnPlaylist(listItem) }, verticalAlignment = Alignment.CenterVertically) {
+                    Row(Modifier.fillMaxWidth().padding(vertical = 2.dp).heightIn(min = 56.dp)
+                        .clip(VakoUi.row).background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = .55f))
+                        .clickable { openOwnPlaylist(listItem) }.padding(horizontal = 10.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically) {
                         Column(Modifier.weight(1f)) {
                             Text(listItem.title, maxLines = 1, overflow = TextOverflow.Ellipsis, fontWeight = FontWeight.SemiBold)
                             Text(trackCountLabel(listItem.count), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                         Text("›", color = MaterialTheme.colorScheme.primary)
                     }
-                    HorizontalDivider(color = MaterialTheme.colorScheme.surfaceVariant)
                 }
             }
         } else {
@@ -1950,11 +1966,8 @@ class MainActivity : ComponentActivity() {
                 searchResultsBeforeArtist = emptyList()
             }) { Text("← К результатам поиска") }
         }
-        OutlinedTextField(
-            value = query, onValueChange = { query = it },
-            label = { Text("Исполнитель или трек") },
-            singleLine = true, modifier = Modifier.fillMaxWidth()
-        )
+        VakoSearchField(query, onValueChange = { query = it }, label = "Исполнитель или трек",
+            modifier = Modifier.fillMaxWidth(), onSearch = { if (!busy && query.isNotBlank()) search() })
         Spacer(Modifier.height(8.dp))
         Button(onClick = ::search, enabled = !busy && query.isNotBlank(), modifier = Modifier.fillMaxWidth()) {
             Text("Найти в Яндекс Музыке")
@@ -2004,9 +2017,7 @@ class MainActivity : ComponentActivity() {
     @Composable
     private fun LibraryScreen() {
         var sortMenuOpen by remember { mutableStateOf(false) }
-        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            Text("Медиатека", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-            Spacer(Modifier.weight(1f))
+        VakoSectionHeader("Медиатека", if (scanning) "Сканирование…" else "${localSongs.size} файлов") {
             ActionIcon("☷", "Очередь воспроизведения", { showQueue = true; showSound = false })
             if (libraryView == 0 || libraryView == 2) {
                 ActionIcon("⇅", "Сортировка медиатеки", { sortMenuOpen = true })
@@ -2030,7 +2041,6 @@ class MainActivity : ComponentActivity() {
                     })
                 }
             }
-            Text("${localSongs.size} файлов", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
             if (libraryStore.hasAudioPermission()) {
@@ -2045,7 +2055,7 @@ class MainActivity : ComponentActivity() {
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
         }
-        Spacer(Modifier.height(6.dp))
+        Spacer(Modifier.height(2.dp))
         Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
             (listOf(0 to "Все") +
                 (if (playlistsEnabled) listOf(1 to "Плейлисты") else emptyList()) +
@@ -2055,12 +2065,10 @@ class MainActivity : ComponentActivity() {
                 (if (artistsEnabled) listOf(5 to "Исполнители") else emptyList()) +
                 (if (genresEnabled) listOf(6 to "Жанры") else emptyList()) +
                 (if (favoritesEnabled) listOf(7 to "Избранное") else emptyList())).forEach { (index, label) ->
-                TextButton(onClick = {
+                VakoChip(label, libraryView == index, onClick = {
                     libraryView = index; selectedPlaylist = ""; selectedBrowseGroup = ""
                     selectedLocalUris = emptySet(); browseSearch = ""
-                }) {
-                    Text(label, color = if (libraryView == index) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
-                }
+                })
             }
         }
         Spacer(Modifier.height(4.dp))
@@ -2122,11 +2130,8 @@ class MainActivity : ComponentActivity() {
 
     @Composable
     private fun AllSongsView() {
-        OutlinedTextField(
-            value = localFilter, onValueChange = { localFilter = it; selectedLocalUris = emptySet() },
-            label = { Text("Поиск в медиатеке") }, singleLine = true,
-            modifier = Modifier.fillMaxWidth()
-        )
+        VakoSearchField(localFilter, onValueChange = { localFilter = it; selectedLocalUris = emptySet() },
+            label = "Поиск в медиатеке", modifier = Modifier.fillMaxWidth())
         Spacer(Modifier.height(8.dp))
         val filtered = remember(localSongs, localFilter, sortMode, sortDescending) {
             sortedSongs(localSongs.filter {
@@ -2135,9 +2140,11 @@ class MainActivity : ComponentActivity() {
             })
         }
         if (filtered.isEmpty()) {
-            Text("Аудиофайлов пока нет. Нажмите «Разрешить доступ» или «Добавить файл».", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(if (scanning) "Сканирование медиатеки…" else
+                "Аудиофайлов пока нет. Нажмите «Разрешить доступ» или «Добавить файл».",
+                color = MaterialTheme.colorScheme.onSurfaceVariant)
         } else {
-            LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            LazyColumn(verticalArrangement = Arrangement.spacedBy(VakoUi.rowGap)) {
                 items(filtered, key = { it.uri.toString() }) { song -> LocalSongRow(song, source = filtered) }
             }
         }
@@ -2167,11 +2174,14 @@ class MainActivity : ComponentActivity() {
             if (playlistNames.isEmpty()) Text("Плейлистов пока нет", color = MaterialTheme.colorScheme.onSurfaceVariant)
             LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 items(playlistNames) { name ->
-                    TextButton(onClick = { selectedPlaylist = name; localRenameInput = name; selectedLocalUris = emptySet() }, modifier = Modifier.fillMaxWidth()) {
-                        Text(name, modifier = Modifier.weight(1f), color = MaterialTheme.colorScheme.onSurface)
-                        Text("›", color = MaterialTheme.colorScheme.primary)
+                    Surface(onClick = { selectedPlaylist = name; localRenameInput = name; selectedLocalUris = emptySet() },
+                        modifier = Modifier.fillMaxWidth(), shape = VakoUi.row,
+                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = .55f)) {
+                        Row(Modifier.padding(horizontal = 12.dp, vertical = 14.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Text(name, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            Text("›", color = MaterialTheme.colorScheme.primary)
+                        }
                     }
-                    HorizontalDivider(color = MaterialTheme.colorScheme.surfaceVariant)
                 }
             }
         } else {
@@ -2278,7 +2288,9 @@ class MainActivity : ComponentActivity() {
                 items(childFolders, key = { "folder:${it.key}" }) { child ->
                     var folderMenuOpen by remember(child.key) { mutableStateOf(false) }
                     Row(
-                        Modifier.fillMaxWidth().height(56.dp),
+                        Modifier.fillMaxWidth().heightIn(min = 56.dp).clip(VakoUi.row)
+                            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = .55f))
+                            .padding(start = 10.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Text("▣", color = MaterialTheme.colorScheme.primary)
@@ -2321,7 +2333,6 @@ class MainActivity : ComponentActivity() {
                         Text("›", color = MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.clickable { selectedFolder = child.key; selectedLocalUris = emptySet() })
                     }
-                    HorizontalDivider(color = MaterialTheme.colorScheme.surfaceVariant)
                 }
                 items(visibleSongs, key = { "song:${it.uri}" }) { song ->
                     LocalSongRow(song, source = visibleSongs,
@@ -2390,8 +2401,8 @@ class MainActivity : ComponentActivity() {
             return
         }
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            OutlinedTextField(browseSearch, onValueChange = { browseSearch = it }, label = { Text("Найти в разделе") },
-                singleLine = true, modifier = Modifier.weight(1f))
+            VakoSearchField(browseSearch, onValueChange = { browseSearch = it },
+                label = "Найти в разделе", modifier = Modifier.weight(1f))
             if (mode == LibraryBrowse.ALBUMS) TextButton(onClick = {
                 albumGridEnabled = !albumGridEnabled
                 appPreferences.setEnabled("album_grid", albumGridEnabled)
@@ -2419,7 +2430,9 @@ class MainActivity : ComponentActivity() {
 
     @Composable
     private fun BrowseGroupRow(group: BrowseGroup, open: () -> Unit) {
-        Row(Modifier.fillMaxWidth().height(58.dp).clickable(onClick = open), verticalAlignment = Alignment.CenterVertically) {
+        Row(Modifier.fillMaxWidth().heightIn(min = 58.dp).clip(VakoUi.row)
+            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = .55f))
+            .clickable(onClick = open).padding(horizontal = 10.dp), verticalAlignment = Alignment.CenterVertically) {
             Text("♫", color = MaterialTheme.colorScheme.primary)
             Spacer(Modifier.width(10.dp))
             Column(Modifier.weight(1f)) {
@@ -2431,7 +2444,6 @@ class MainActivity : ComponentActivity() {
             }
             Text("›", color = MaterialTheme.colorScheme.primary)
         }
-        HorizontalDivider(color = MaterialTheme.colorScheme.surfaceVariant)
     }
 
     @Composable
@@ -2462,11 +2474,15 @@ class MainActivity : ComponentActivity() {
                              displayTitle: String = song.title) {
         var menuOpen by remember(song.uri.toString()) { mutableStateOf(false) }
         val selected = song.uri.toString() in selectedLocalUris
-        Column {
-            Row(Modifier.fillMaxWidth().height(if (compactRows) 56.dp else 72.dp).combinedClickable(
+        Column(Modifier.padding(vertical = 2.dp)) {
+            Row(Modifier.fillMaxWidth().heightIn(min = if (compactRows) 56.dp else 72.dp)
+                .clip(VakoUi.row)
+                .background(if (selected) MaterialTheme.colorScheme.primaryContainer
+                    else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = .45f))
+                .combinedClickable(
                 onClick = { if (selectedLocalUris.isNotEmpty()) toggleLocalSelection(song) else tapLocal(song, source) },
                 onLongClick = { toggleLocalSelection(song) }
-            ), verticalAlignment = Alignment.CenterVertically) {
+            ).padding(start = 10.dp, top = 4.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
                 if (selectedLocalUris.isNotEmpty()) Checkbox(checked = selected, onCheckedChange = { toggleLocalSelection(song) })
                 else Text(if (song.uri.toString() in favoriteUris) "♥" else "♫", color = MaterialTheme.colorScheme.primary)
                 Spacer(Modifier.width(12.dp))
@@ -2474,7 +2490,8 @@ class MainActivity : ComponentActivity() {
                     Text(displayTitle, maxLines = 1, overflow = TextOverflow.Ellipsis, fontWeight = FontWeight.SemiBold)
                     if (song.artist.isNotBlank()) Text(song.artist, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
-                if (song.durationMs > 0) Text(LibraryBrowse.duration(song.durationMs), style = MaterialTheme.typography.bodySmall,
+                if (song.durationMs > 0) Text(LibraryBrowse.duration(song.durationMs),
+                    modifier = Modifier.padding(start = 8.dp), style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant)
                 ActionIcon("⋮", "Действия с ${song.title}", { menuOpen = true })
                 DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
@@ -2531,7 +2548,6 @@ class MainActivity : ComponentActivity() {
                     })
                 }
             }
-            HorizontalDivider(color = MaterialTheme.colorScheme.surfaceVariant)
         }
     }
 
@@ -2724,7 +2740,9 @@ class MainActivity : ComponentActivity() {
 
     @Composable
     private fun SettingLink(title: String, description: String, page: Int) {
-        Row(Modifier.fillMaxWidth().clickable { settingsPage = page }.padding(vertical = 12.dp),
+        Row(Modifier.fillMaxWidth().padding(vertical = 3.dp).clip(VakoUi.row)
+            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = .55f))
+            .clickable { settingsPage = page }.padding(horizontal = 14.dp, vertical = 12.dp),
             verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
                 Text(title, fontWeight = FontWeight.SemiBold)
@@ -2733,7 +2751,6 @@ class MainActivity : ComponentActivity() {
             }
             Text("›", color = MaterialTheme.colorScheme.primary)
         }
-        HorizontalDivider(color = MaterialTheme.colorScheme.surfaceVariant)
     }
 
     @Composable
@@ -2741,10 +2758,7 @@ class MainActivity : ComponentActivity() {
         Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
             horizontalArrangement = Arrangement.spacedBy(4.dp)) {
             labels.forEachIndexed { index, label ->
-                TextButton(onClick = { onSelect(index) }) {
-                    Text(label, color = if (selected == index) MaterialTheme.colorScheme.primary
-                        else MaterialTheme.colorScheme.onSurfaceVariant)
-                }
+                VakoChip(label, selected == index) { onSelect(index) }
             }
         }
     }
@@ -2847,7 +2861,9 @@ class MainActivity : ComponentActivity() {
 
     @Composable
     private fun SettingSwitch(title: String, description: String, checked: Boolean, onChange: (Boolean) -> Unit) {
-        Row(Modifier.fillMaxWidth().clickable { onChange(!checked) }.padding(vertical = 8.dp),
+        Row(Modifier.fillMaxWidth().padding(vertical = 3.dp).clip(VakoUi.row)
+            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = .55f))
+            .clickable { onChange(!checked) }.padding(horizontal = 14.dp, vertical = 8.dp),
             verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
                 Text(title, fontWeight = FontWeight.SemiBold)
@@ -2856,7 +2872,6 @@ class MainActivity : ComponentActivity() {
             }
             Switch(checked = checked, onCheckedChange = onChange)
         }
-        HorizontalDivider(color = MaterialTheme.colorScheme.surfaceVariant)
     }
 
     @Composable
@@ -2951,9 +2966,12 @@ class MainActivity : ComponentActivity() {
         val listState = rememberLazyListState()
         var draggingIndex by remember { mutableStateOf(-1) }
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            TextButton(onClick = { showQueue = false }) { Text("←") }
+            TextButton(onClick = { showQueue = false },
+                modifier = Modifier.semantics { contentDescription = "Вернуться из очереди" }) { Text("←") }
             Text("Очередь · ${queue.size}", modifier = Modifier.weight(1f), fontWeight = FontWeight.SemiBold)
-            TextButton(onClick = { showClearQueue = true }, enabled = queue.isNotEmpty()) { Text("Очистить") }
+            TextButton(onClick = { showClearQueue = true }, enabled = queue.isNotEmpty()) {
+                Text("Очистить", color = MaterialTheme.colorScheme.error)
+            }
         }
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
             TextButton(onClick = { saveQueueName = ""; saveQueueError = ""; showSaveQueue = true },
@@ -2965,7 +2983,10 @@ class MainActivity : ComponentActivity() {
         if (queue.isEmpty()) Text("Очередь пуста", color = MaterialTheme.colorScheme.onSurfaceVariant)
         LazyColumn(state = listState, verticalArrangement = Arrangement.spacedBy(4.dp)) {
             itemsIndexed(queue, key = { index, _ -> index }) { index, item ->
-                Row(Modifier.fillMaxWidth().height(64.dp), verticalAlignment = Alignment.CenterVertically) {
+                Row(Modifier.fillMaxWidth().heightIn(min = 64.dp).clip(VakoUi.row)
+                    .background(if (index == queueIndex || index == draggingIndex) MaterialTheme.colorScheme.primaryContainer
+                        else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = .45f))
+                    .padding(start = 6.dp), verticalAlignment = Alignment.CenterVertically) {
                     Box(Modifier.width(30.dp).height(56.dp).pointerInput(index, queue.size) {
                         var draggedItem: QueueItem? = null
                         var originalOffset = 0
@@ -2991,9 +3012,10 @@ class MainActivity : ComponentActivity() {
                             }
                         )
                     }, contentAlignment = Alignment.Center) {
-                        Text("≡", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text("≡", color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.semantics { contentDescription = "Перетащить трек ${index + 1}" })
                     }
-                    Text(if (index == draggingIndex) "↕" else if (index == queueIndex) "▶" else "${index + 1}",
+                    Text("${index + 1}",
                         color = MaterialTheme.colorScheme.primary)
                     Spacer(Modifier.width(10.dp))
                     Column(Modifier.weight(1f).clickable {
@@ -3001,7 +3023,7 @@ class MainActivity : ComponentActivity() {
                         resetShuffleOrder()
                         playQueueItem()
                     }) {
-                        Text(when (item) { is QueueItem.Local -> item.song.title; is QueueItem.Remote -> item.track.title },
+                        Text((if (index == queueIndex) "▶ " else "") + when (item) { is QueueItem.Local -> item.song.title; is QueueItem.Remote -> item.track.title },
                             maxLines = 1, overflow = TextOverflow.Ellipsis, fontWeight = FontWeight.SemiBold,
                             color = if (index == queueIndex) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface)
                         Text(when (item) { is QueueItem.Local -> item.song.artist; is QueueItem.Remote -> item.track.artist },
@@ -3010,11 +3032,20 @@ class MainActivity : ComponentActivity() {
                     }
                     if (item is QueueItem.Local && item.song.durationMs > 0) Text(LibraryBrowse.duration(item.song.durationMs),
                         style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    TextButton(onClick = { moveQueueItem(index, -1) }, enabled = index > 0) { Text("↑") }
-                    TextButton(onClick = { moveQueueItem(index, 1) }, enabled = index < queue.lastIndex) { Text("↓") }
-                    TextButton(onClick = { removeQueueItem(index) }, enabled = index != queueIndex) { Text("×") }
+                    TextButton(onClick = { moveQueueItem(index, -1) }, enabled = index > 0,
+                        modifier = Modifier.semantics { contentDescription = "Поднять трек ${index + 1} в очереди" }) {
+                        Text("↑")
+                    }
+                    TextButton(onClick = { moveQueueItem(index, 1) }, enabled = index < queue.lastIndex,
+                        modifier = Modifier.semantics { contentDescription = "Опустить трек ${index + 1} в очереди" }) {
+                        Text("↓")
+                    }
+                    TextButton(onClick = { removeQueueItem(index) }, enabled = index != queueIndex,
+                        modifier = Modifier.semantics { contentDescription = "Удалить трек ${index + 1} из очереди" }) {
+                        Text("×", color = if (index != queueIndex) MaterialTheme.colorScheme.error
+                            else MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
                 }
-                HorizontalDivider(color = MaterialTheme.colorScheme.surfaceVariant)
             }
         }
     }
@@ -3099,11 +3130,15 @@ class MainActivity : ComponentActivity() {
     private fun TrackRow(track: Track, source: List<Track>, onRemove: (() -> Unit)? = null) {
         var menuOpen by remember(track.trackId) { mutableStateOf(false) }
         val selected = selectedRemoteTracks.any { trackKey(it) == trackKey(track) }
-        Column {
-            Row(Modifier.fillMaxWidth().height(if (compactRows) 58.dp else 74.dp).combinedClickable(
+        Column(Modifier.padding(vertical = 2.dp)) {
+            Row(Modifier.fillMaxWidth().heightIn(min = if (compactRows) 58.dp else 74.dp)
+                .clip(VakoUi.row)
+                .background(if (selected) MaterialTheme.colorScheme.primaryContainer
+                    else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = .45f))
+                .combinedClickable(
                 onClick = { if (selectedRemoteTracks.isNotEmpty()) toggleRemoteSelection(track) else tapRemote(track, source) },
                 onLongClick = { toggleRemoteSelection(track) }
-            ), verticalAlignment = Alignment.CenterVertically) {
+            ).padding(start = 10.dp, top = 4.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
                 if (selectedRemoteTracks.isNotEmpty()) Checkbox(checked = selected, onCheckedChange = { toggleRemoteSelection(track) })
                 Column(Modifier.weight(1f)) {
                     Text(track.title.ifBlank { "Без названия" }, maxLines = 1, overflow = TextOverflow.Ellipsis, fontWeight = FontWeight.SemiBold)
@@ -3135,7 +3170,6 @@ class MainActivity : ComponentActivity() {
                     })
                 }
             }
-            HorizontalDivider(color = MaterialTheme.colorScheme.surfaceVariant)
         }
     }
 
@@ -3172,7 +3206,8 @@ class MainActivity : ComponentActivity() {
     @Composable
     private fun PlayerBar() {
         var pendingSeek by remember(queueIndex, currentTitle) { mutableStateOf<Float?>(null) }
-        Surface(color = MaterialTheme.colorScheme.surfaceVariant) {
+        Surface(color = MaterialTheme.colorScheme.surfaceVariant, shape = VakoUi.panel,
+            modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp), tonalElevation = 1.dp) {
             Column {
             Row(Modifier.fillMaxWidth().height(66.dp).clickable { showNowPlaying = true }.padding(horizontal = 6.dp),
                 verticalAlignment = Alignment.CenterVertically) {
@@ -3243,7 +3278,7 @@ class MainActivity : ComponentActivity() {
             }
             Spacer(Modifier.height(8.dp))
             Box(
-                Modifier.fillMaxWidth().weight(1f).clip(RoundedCornerShape(18.dp))
+                Modifier.fillMaxWidth().weight(1f).clip(VakoUi.shapes.extraLarge)
                     .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = .35f))
                     .pointerInput(visualizerVisible, visualizerStyle) {
                     var dragged = 0f
@@ -3290,8 +3325,16 @@ class MainActivity : ComponentActivity() {
             }
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly, verticalAlignment = Alignment.CenterVertically) {
                 ActionIcon("⏮", "Предыдущий трек", ::previousTrack)
-                ActionIcon(if (playing) "Ⅱ" else "▶", if (playing) "Пауза" else "Играть", ::togglePlayback,
-                    enabled = prepared || queue.isNotEmpty(), selected = true)
+                Surface(shape = VakoUi.row, color = MaterialTheme.colorScheme.primary,
+                    contentColor = MaterialTheme.colorScheme.onPrimary) {
+                    IconButton(onClick = ::togglePlayback, enabled = prepared || queue.isNotEmpty(),
+                        modifier = Modifier.width(64.dp).height(56.dp).semantics {
+                            contentDescription = if (playing) "Пауза" else "Играть"
+                        }) {
+                        Text(if (playing) "Ⅱ" else "▶", fontSize = 32.sp,
+                            color = MaterialTheme.colorScheme.onPrimary)
+                    }
+                }
                 ActionIcon("⏭", "Следующий трек", { nextTrack() })
             }
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
