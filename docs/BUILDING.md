@@ -25,14 +25,14 @@ Gradle создаст `app/build/outputs/apk/release/app-release-unsigned.apk`. 
 Пример для Android Build Tools (значения путей и паролей подставляет владелец ключа):
 
 ```bash
-zipalign -p -f 4 app/build/outputs/apk/release/app-release-unsigned.apk vako-music-aligned.apk
-apksigner sign --ks /secure/path/vako-music-release.p12 --ks-type PKCS12 --ks-key-alias vako-music --out vako-music-0.0.1.apk vako-music-aligned.apk
-apksigner verify --verbose vako-music-0.0.1.apk
+zipalign -p -f 4 app/build/outputs/apk/release/app-release-unsigned.apk vako-player-aligned.apk
+apksigner sign --ks /secure/path/vako-music-release.p12 --ks-type PKCS12 --ks-key-alias vako-music --out Vako-Player-v0.0.2.apk vako-player-aligned.apk
+apksigner verify --verbose Vako-Player-v0.0.2.apk
 ```
 
-Публичный релиз 0.0.1 использует `versionCode` 19. Это сохраняет возможность обновления существующих тестовых установок только при совпадении сертификата; при разных сертификатах нужна переустановка после сохранения данных. Пакет приложения — `ru.rikko.music`.
+Публичный релиз 0.0.2 использует `versionCode` 20. Обновление 0.0.1 поверх установленного приложения возможно при совпадении сертификата; при разных сертификатах нужна переустановка после сохранения данных. Пакет приложения — `ru.rikko.music`.
 
-Для первого публичного выпуска создан отдельный релизный ключ в локальном каталоге `~/.local/share/vako-build/release-signing/`, который не попадает в Git. Владелец проекта должен отдельно сохранить резервную копию файла ключа и пароля. Публичный отпечаток сертификата записан в [RELEASE_SIGNATURE.md](RELEASE_SIGNATURE.md).
+Для публичных выпусков используется релизный ключ из локального каталога `~/.local/share/vako-build/release-signing/`, который не попадает в Git. Владелец проекта должен отдельно сохранить резервную копию файла ключа и пароля. Публичный отпечаток сертификата записан в [RELEASE_SIGNATURE.md](RELEASE_SIGNATURE.md).
 
 ## CI
 
