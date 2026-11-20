@@ -222,6 +222,12 @@ class MainActivity : ComponentActivity() {
     private var playlistNames by mutableStateOf<List<String>>(emptyList())
     private var libraryView by mutableStateOf(0)
     private var remoteView by mutableStateOf(0)
+    private lateinit var autoCollectionStore: AutoCollectionStore
+    private var autoCollections by mutableStateOf<List<AutoCollection>>(emptyList())
+    private var selectedAutoCollection by mutableStateOf<AutoCollection?>(null)
+    private var autoCollectionName by mutableStateOf("")
+    private var autoRenameInput by mutableStateOf("")
+    private var autoCollectionBusy by mutableStateOf(false)
     private var ownPlaylists by mutableStateOf<List<MusicRepository.UserPlaylist>>(emptyList())
     private var selectedRemotePlaylist by mutableStateOf<MusicRepository.UserPlaylist?>(null)
     private var remotePlaylistTracks by mutableStateOf<List<Track>>(emptyList())
@@ -259,6 +265,7 @@ class MainActivity : ComponentActivity() {
     private var shuffle by mutableStateOf(false)
     private var queue by mutableStateOf<List<QueueItem>>(emptyList())
     private var queueIndex by mutableStateOf(-1)
+    private var queueSourcePlaylist by mutableStateOf<MusicRepository.UserPlaylist?>(null)
     private var showQueue by mutableStateOf(false)
     private var showSound by mutableStateOf(false)
     private var selectedLocalUris by mutableStateOf<Set<String>>(emptySet())
@@ -280,6 +287,7 @@ class MainActivity : ComponentActivity() {
     private var visualizer: Visualizer? = null
     private var visualizerVisible by mutableStateOf(false)
     private var visualizerStyle by mutableStateOf(0)
+    private var miniSpectrumEnabled by mutableStateOf(true)
     private var waveform by mutableStateOf(ByteArray(0))
     private var spectrum by mutableStateOf(ByteArray(0))
     private var playbackService: PlaybackService? = null
@@ -293,7 +301,7 @@ class MainActivity : ComponentActivity() {
             playing = playbackService?.player?.isPlaying == true
             if (eqEnabled) startEqualizer()
             status = ""
-            if (visualizerVisible) startVisualizer()
+            if (visualizerVisible || miniSpectrumEnabled) startVisualizer()
         }
         override fun onCompletion() {
             playing = false
@@ -309,6 +317,8 @@ class MainActivity : ComponentActivity() {
         }
         override fun onPlaybackStateChanged(playing: Boolean) {
             this@MainActivity.playing = playing
+            if (playing && (miniSpectrumEnabled || visualizerVisible) && visualizer == null) startVisualizer()
+            else if (!playing) stopVisualizer()
             if (sleepDeadline > 0L && playbackService?.sleepDeadline == 0L) {
                 sleepDeadline = 0L
                 sleepRemainingMs = 0L
@@ -368,7 +378,6 @@ class MainActivity : ComponentActivity() {
 
     private val visualizerPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         if (granted) startVisualizer() else {
-            visualizerVisible = false
             status = "Для визуализации Android требует разрешение на аудио"
         }
     }
@@ -384,6 +393,13 @@ class MainActivity : ComponentActivity() {
         tokenStore = TokenStore(this)
         libraryStore = LibraryStore(this)
         appPreferences = AppPreferences(this)
+        autoCollectionStore = AutoCollectionStore(this)
+        autoCollections = autoCollectionStore.all()
+        autoCollectionName = "Подборка ${autoCollections.size + 1}"
+        val visualizerPage = appPreferences.number("visualizer_page", 0).coerceIn(0, 6)
+        visualizerVisible = visualizerPage > 0
+        visualizerStyle = (visualizerPage - 1).coerceAtLeast(0)
+        miniSpectrumEnabled = appPreferences.enabled("mini_spectrum", true)
         selectedFolder = appPreferences.string("last_music_folder", "")
         moduleOrder = (appPreferences.string("module_order", "0,1,2,3").split(',')
             .mapNotNull(String::toIntOrNull).filter { it in 0..3 } + listOf(0, 1, 2, 3)).distinct()
@@ -448,7 +464,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onPostResume() {
         super.onPostResume()
-        if (visualizerVisible && prepared && visualizer == null &&
+        if ((visualizerVisible || miniSpectrumEnabled) && prepared && visualizer == null &&
             ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
             startVisualizer()
         }
@@ -553,6 +569,8 @@ class MainActivity : ComponentActivity() {
         }
         if (restored.isEmpty()) return
         stopVisualizer()
+        waveform = ByteArray(0)
+        spectrum = ByteArray(0)
         stopEqualizer()
         val activePlayback = keepPlayback && playbackService?.title?.isNotBlank() == true
         if (!activePlayback) playbackService?.reset()
@@ -657,6 +675,75 @@ class MainActivity : ComponentActivity() {
                 postIfActive { remotePlaylistTracks = tracks; busy = false; status = "Треков: ${tracks.size}" }
             } catch (e: Exception) {
                 postIfActive { busy = false; status = "Не удалось открыть плейлист: ${e.message ?: "ошибка"}" }
+            }
+        }
+    }
+
+    private fun generateAutoCollection() {
+        if (autoCollectionBusy) return
+        if (token.isBlank()) { status = "Подключите аккаунт Яндекс Музыки"; return }
+        if (autoCollections.size >= 10) { status = "Лимит: 10 подборок"; return }
+        val name = autoCollectionName.trim()
+        if (name.isBlank()) { status = "Введите название подборки"; return }
+        if (autoCollections.any { it.name.equals(name, true) }) { status = "Такое название уже есть"; return }
+        autoCollectionBusy = true
+        status = "Подбираем музыку…"
+        backgroundTask {
+            try {
+                val tracks = recommendedTracks()
+                autoCollectionStore.save(name, tracks)
+                postIfActive {
+                    autoCollections = autoCollectionStore.all()
+                    autoCollectionName = "Подборка ${autoCollections.size + 1}"
+                    autoCollectionBusy = false
+                    status = "Подборка сохранена: ${tracks.size} треков"
+                }
+            } catch (e: Exception) {
+                postIfActive { autoCollectionBusy = false; status = "Не удалось создать подборку: ${e.message ?: "ошибка"}" }
+            }
+        }
+    }
+
+    private fun recommendedTracks(): List<Track> {
+        val seeds = MusicRepository.recommendationSeeds(token).shuffled().take(5)
+        return (seeds + seeds.flatMap { MusicRepository.similarTracks(it, token) })
+            .filter { it.albumId.isNotBlank() }.distinctBy(::trackKey).take(100)
+    }
+
+    private fun refreshAutoCollection(collection: AutoCollection) {
+        if (autoCollectionBusy) return
+        autoCollectionBusy = true
+        status = "Обновляем подборку…"
+        backgroundTask {
+            try {
+                val tracks = recommendedTracks()
+                autoCollectionStore.replace(collection.name, tracks)
+                postIfActive {
+                    autoCollections = autoCollectionStore.all()
+                    selectedAutoCollection = autoCollections.firstOrNull { it.name == collection.name }
+                    autoCollectionBusy = false
+                    status = "Подборка обновлена: ${tracks.size} треков"
+                }
+            } catch (e: Exception) {
+                postIfActive { autoCollectionBusy = false; status = "Не удалось обновить подборку: ${e.message ?: "ошибка"}" }
+            }
+        }
+    }
+
+    private fun exportAutoCollection(collection: AutoCollection) {
+        if (autoCollectionBusy || token.isBlank()) return
+        autoCollectionBusy = true
+        status = "Создаём копию в Яндекс Музыке…"
+        backgroundTask {
+            try {
+                val playlist = MusicRepository.createPlaylist(collection.name, collection.tracks, token)
+                postIfActive {
+                    ownPlaylists = ownPlaylists + playlist
+                    autoCollectionBusy = false
+                    status = "Копия «${collection.name}» создана в Яндекс Музыке"
+                }
+            } catch (e: Exception) {
+                postIfActive { autoCollectionBusy = false; status = "Не удалось сохранить в Яндекс Музыке: ${e.message ?: "ошибка"}" }
             }
         }
     }
@@ -880,6 +967,7 @@ class MainActivity : ComponentActivity() {
 
     private fun playRemote(track: Track, source: List<Track> = results) {
         val items = source.ifEmpty { listOf(track) }.map(QueueItem::Remote)
+        queueSourcePlaylist = selectedRemotePlaylist?.takeIf { source === remotePlaylistTracks }
         queue = items
         queueIndex = items.indexOfFirst { it.track.trackId == track.trackId }.coerceAtLeast(0)
         resetShuffleOrder()
@@ -887,6 +975,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun playLocal(song: LocalSong, source: List<LocalSong> = localSongs) {
+        queueSourcePlaylist = null
         val items = source.ifEmpty { listOf(song) }.map(QueueItem::Local)
         queue = items
         queueIndex = items.indexOfFirst { it.song.uri == song.uri }.coerceAtLeast(0)
@@ -914,6 +1003,8 @@ class MainActivity : ComponentActivity() {
         val item = queue.getOrNull(queueIndex) ?: return
         val generation = ++playbackGeneration
         stopVisualizer()
+        waveform = ByteArray(0)
+        spectrum = ByteArray(0)
         stopEqualizer()
         playbackService?.reset()
         playing = false
@@ -1155,7 +1246,7 @@ class MainActivity : ComponentActivity() {
     private fun startVisualizer() {
         if (!prepared) return
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
-            visualizerPermission.launch(Manifest.permission.RECORD_AUDIO)
+            if (visualizerVisible && showNowPlaying) visualizerPermission.launch(Manifest.permission.RECORD_AUDIO)
             return
         }
         stopVisualizer()
@@ -1175,7 +1266,6 @@ class MainActivity : ComponentActivity() {
             effect.enabled = true
         } catch (e: Exception) {
             stopVisualizer()
-            visualizerVisible = false
             status = "Визуализация недоступна на устройстве: ${e.message ?: "ошибка"}"
         }
     }
@@ -1234,6 +1324,9 @@ class MainActivity : ComponentActivity() {
     @Composable
     private fun App() {
         BackHandler { navigateBack() }
+        LaunchedEffect(showNowPlaying, visualizerVisible) {
+            if (showNowPlaying && visualizerVisible && prepared && visualizer == null) startVisualizer()
+        }
         LaunchedEffect(selectedFolder) { appPreferences.setString("last_music_folder", selectedFolder) }
         LaunchedEffect(navigationVisible, navigationTick, showNowPlaying) {
             if (navigationVisible && !showNowPlaying) {
@@ -1390,8 +1483,6 @@ class MainActivity : ComponentActivity() {
 
     private fun closeNowPlaying() {
         showNowPlaying = false
-        visualizerVisible = false
-        stopVisualizer()
     }
 
     private fun changeVisualizerPage(direction: Int) {
@@ -1399,7 +1490,7 @@ class MainActivity : ComponentActivity() {
         val next = (current + direction + 7) % 7
         if (next == 0) {
             visualizerVisible = false
-            stopVisualizer()
+            if (!miniSpectrumEnabled) stopVisualizer()
         } else {
             visualizerStyle = next - 1
             if (!visualizerVisible) {
@@ -1407,6 +1498,7 @@ class MainActivity : ComponentActivity() {
                 startVisualizer()
             }
         }
+        appPreferences.setNumber("visualizer_page", next)
     }
 
     private fun navigateBack() {
@@ -1429,6 +1521,7 @@ class MainActivity : ComponentActivity() {
             }
             activeTab == 0 && localFilter.isNotEmpty() -> localFilter = ""
             activeTab == 1 && showLikedTracks -> showLikedTracks = false
+            activeTab == 1 && selectedAutoCollection != null -> selectedAutoCollection = null
             activeTab == 1 && selectedRemotePlaylist != null -> {
                 selectedRemotePlaylist = null
                 remotePlaylistTracks = emptyList()
@@ -1656,13 +1749,13 @@ class MainActivity : ComponentActivity() {
 
     @Composable
     private fun YandexScreen() {
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            listOf("Поиск", "Мои плейлисты", "По ссылке").forEachIndexed { index, label ->
+        Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+            listOf("Поиск", "Мои плейлисты", "По ссылке", "Автоподборки").forEachIndexed { index, label ->
                 TextButton(onClick = {
                     remoteView = index
                     selectedRemoteTracks = emptyList()
                     if (index == 1 && ownPlaylists.isEmpty() && !busy) loadOwnPlaylists()
-                }, modifier = Modifier.weight(1f)) {
+                }) {
                     Text(label, color = if (remoteView == index) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
@@ -1673,7 +1766,71 @@ class MainActivity : ComponentActivity() {
         when (remoteView) {
             0 -> SearchScreen()
             1 -> OwnPlaylistsScreen()
-            else -> YandexLinkScreen()
+            2 -> YandexLinkScreen()
+            else -> AutoCollectionsScreen()
+        }
+    }
+
+    @Composable
+    private fun AutoCollectionsScreen() {
+        val selected = selectedAutoCollection
+        if (selected != null) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                TextButton(onClick = { selectedAutoCollection = null }) { Text("←") }
+                Text(selected.name, modifier = Modifier.weight(1f), fontWeight = FontWeight.SemiBold)
+            }
+            Text("По любимым трекам · ${selected.tracks.size} треков · обновлено ${
+                if (selected.updatedAt > 0) java.text.DateFormat.getDateInstance().format(java.util.Date(selected.updatedAt)) else "ранее"
+            }", style = MaterialTheme.typography.bodySmall)
+            OutlinedTextField(value = autoRenameInput, onValueChange = { autoRenameInput = it },
+                label = { Text("Название подборки") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+            TextButton(onClick = {
+                try {
+                    autoCollectionStore.rename(selected.name, autoRenameInput)
+                    autoCollections = autoCollectionStore.all()
+                    selectedAutoCollection = autoCollections.firstOrNull { it.name == autoRenameInput.trim() }
+                    status = "Название сохранено на устройстве"
+                } catch (e: Exception) { status = e.message ?: "Не удалось переименовать" }
+            }, enabled = autoRenameInput.trim().isNotBlank() && autoRenameInput.trim() != selected.name) {
+                Text("Переименовать")
+            }
+            TextButton(onClick = { refreshAutoCollection(selected) }, enabled = !autoCollectionBusy) { Text("Обновить подборку") }
+            TextButton(onClick = { exportAutoCollection(selected) }, enabled = !autoCollectionBusy) {
+                Text("Сохранить как плейлист Яндекс Музыки")
+            }
+            TextButton(onClick = {
+                autoCollectionStore.delete(selected.name)
+                autoCollections = autoCollectionStore.all()
+                selectedAutoCollection = null
+                status = "Подборка удалена с устройства"
+            }) { Text("Удалить локальную подборку") }
+            StatusLine()
+            LazyColumn { items(selected.tracks, key = ::trackKey) { track -> TrackRow(track, selected.tracks) } }
+        } else {
+            Text("Автоподборки", fontWeight = FontWeight.SemiBold)
+            Text("На основе любимых треков. До 10 подборок по 100 треков; хранятся только в Vako Music.",
+                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            OutlinedTextField(value = autoCollectionName, onValueChange = { autoCollectionName = it },
+                label = { Text("Название новой подборки") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+            Button(onClick = ::generateAutoCollection,
+                enabled = !autoCollectionBusy && autoCollections.size < 10 && autoCollectionName.isNotBlank()) {
+                Text(if (autoCollectionBusy) "Подбираем…" else "Создать подборку")
+            }
+            StatusLine()
+            LazyColumn { items(autoCollections, key = { it.name }) { collection ->
+                Row(Modifier.fillMaxWidth().height(60.dp).clickable {
+                    selectedAutoCollection = collection
+                    autoRenameInput = collection.name
+                },
+                    verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text(collection.name, fontWeight = FontWeight.SemiBold)
+                        Text(trackCountLabel(collection.tracks.size), style = MaterialTheme.typography.bodySmall)
+                    }
+                    Text("›", color = MaterialTheme.colorScheme.primary)
+                }
+                HorizontalDivider(color = MaterialTheme.colorScheme.surfaceVariant)
+            } }
         }
     }
 
@@ -1682,7 +1839,8 @@ class MainActivity : ComponentActivity() {
         val available = when (remoteView) {
             0 -> results
             1 -> if (showLikedTracks) likedTracks else remotePlaylistTracks
-            else -> playlist
+            2 -> playlist
+            else -> selectedAutoCollection?.tracks.orEmpty()
         }
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             Text("Выбрано: ${selectedRemoteTracks.size}", modifier = Modifier.weight(1f))
@@ -2495,6 +2653,12 @@ class MainActivity : ComponentActivity() {
                         SettingSwitch("Обложка на весь квадрат", "Обрезать края вместо вписывания", coverCrop) { enabled ->
                             coverCrop = enabled; appPreferences.setEnabled("cover_crop", enabled)
                         }
+                        SettingSwitch("Мини-спектр", "Показывать спектр в компактном плеере", miniSpectrumEnabled) { enabled ->
+                            miniSpectrumEnabled = enabled
+                            appPreferences.setEnabled("mini_spectrum", enabled)
+                            if (enabled && prepared) startVisualizer()
+                            else if (!enabled && !visualizerVisible) stopVisualizer()
+                        }
                         SettingSwitch("Не гасить экран", "Пока Vako Music воспроизводит трек на экране", keepScreenOn) { enabled ->
                             keepScreenOn = enabled; appPreferences.setEnabled("keep_screen_on", enabled)
                         }
@@ -2920,10 +3084,10 @@ class MainActivity : ComponentActivity() {
     @OptIn(ExperimentalFoundationApi::class)
     @Composable
     private fun ActionIcon(symbol: String, label: String, onClick: () -> Unit,
-                           enabled: Boolean = true, selected: Boolean = false) {
+                           enabled: Boolean = true, selected: Boolean = false, large: Boolean = false) {
         IconButton(onClick = onClick, enabled = enabled,
-            modifier = Modifier.width(48.dp).height(48.dp).semantics { contentDescription = label }) {
-            Text(symbol, fontSize = 27.sp, lineHeight = 28.sp,
+            modifier = Modifier.width(if (large) 50.dp else 48.dp).height(48.dp).semantics { contentDescription = label }) {
+            Text(symbol, fontSize = if (large) 34.sp else 27.sp, lineHeight = if (large) 35.sp else 28.sp,
                 color = if (!enabled) MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = .35f)
                     else if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
         }
@@ -2944,9 +3108,9 @@ class MainActivity : ComponentActivity() {
                     Text(track.title.ifBlank { "Без названия" }, maxLines = 1, overflow = TextOverflow.Ellipsis, fontWeight = FontWeight.SemiBold)
                     Text(track.artist, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
-                if (selectedRemoteTracks.isEmpty()) ActionIcon("▶", "Играть ${track.title}", { playRemote(track, source) })
-                ActionIcon("↓", "Скачать ${track.title}", { download(track) }, enabled = !downloading && !bulkDownloading)
-                ActionIcon("⋮", "Действия с ${track.title}", { menuOpen = true })
+                if (selectedRemoteTracks.isEmpty()) ActionIcon("▶", "Играть ${track.title}", { playRemote(track, source) }, large = true)
+                ActionIcon("↓", "Скачать ${track.title}", { download(track) }, enabled = !downloading && !bulkDownloading, large = true)
+                ActionIcon("⋮", "Действия с ${track.title}", { menuOpen = true }, large = true)
                 DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
                     DropdownMenuItem(text = { Text("Выбрать") }, onClick = {
                         toggleRemoteSelection(track)
@@ -2975,9 +3139,40 @@ class MainActivity : ComponentActivity() {
     }
 
     @Composable
+    private fun CurrentRemoteActions() {
+        val track = (queue.getOrNull(queueIndex) as? QueueItem.Remote)?.track ?: return
+        var open by remember(trackKey(track)) { mutableStateOf(false) }
+        val source = queueSourcePlaylist
+        ActionIcon("⋮", "Действия с текущим треком", { open = true }, large = true)
+        DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+            DropdownMenuItem(text = { Text("Добавить в плейлист…") }, onClick = {
+                open = false
+                openRemotePlaylistPicker(listOf(track))
+            })
+            DropdownMenuItem(text = { Text("Играть следующим") }, onClick = {
+                open = false
+                addToQueue(QueueItem.Remote(track), true)
+            })
+            DropdownMenuItem(text = { Text("Добавить в очередь") }, onClick = {
+                open = false
+                addToQueue(QueueItem.Remote(track), false)
+            })
+            DropdownMenuItem(text = { Text("Скачать") }, onClick = { open = false; download(track) },
+                enabled = !downloading && !bulkDownloading)
+            if (source != null) DropdownMenuItem(text = { Text("Убрать из «${source.title}»") }, onClick = {
+                open = false
+                val index = remotePlaylistTracks.indexOfFirst { trackKey(it) == trackKey(track) }
+                if (selectedRemotePlaylist?.kind == source.kind && index >= 0) removeOwnTrack(index)
+                else status = "Откройте плейлист для удаления трека"
+            }, enabled = !busy)
+        }
+    }
+
+    @Composable
     private fun PlayerBar() {
         Surface(color = MaterialTheme.colorScheme.surfaceVariant) {
-            Row(Modifier.fillMaxWidth().height(66.dp).clickable { showNowPlaying = true }.padding(horizontal = 10.dp),
+            Column {
+            Row(Modifier.fillMaxWidth().height(66.dp).clickable { showNowPlaying = true }.padding(horizontal = 6.dp),
                 verticalAlignment = Alignment.CenterVertically) {
                     cover?.let { art ->
                         Image(art, contentDescription = "Обложка трека", modifier = Modifier.width(42.dp).height(42.dp), contentScale = ContentScale.Crop)
@@ -2987,10 +3182,35 @@ class MainActivity : ComponentActivity() {
                         Text(currentTitle, maxLines = 1, overflow = TextOverflow.Ellipsis, fontWeight = FontWeight.SemiBold)
                         Text(currentArtist, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodySmall)
                     }
+                    if (miniSpectrumEnabled && playing && visualizer != null && spectrum.isNotEmpty())
+                        MiniSpectrum(Modifier.width(30.dp).height(22.dp))
+                    if (queue.getOrNull(queueIndex) is QueueItem.Remote) CurrentRemoteActions()
                     ActionIcon("⏮", "Предыдущий трек", ::previousTrack)
                     ActionIcon(if (playing) "Ⅱ" else "▶", if (playing) "Пауза" else "Играть", ::togglePlayback,
                         enabled = prepared || queue.isNotEmpty(), selected = true)
                     ActionIcon("⏭", "Следующий трек", { nextTrack() })
+            }
+            if (durationMs > 0) LinearProgressIndicator(
+                progress = { (currentPositionMs.toFloat() / durationMs).coerceIn(0f, 1f) },
+                modifier = Modifier.fillMaxWidth().height(3.dp),
+            )
+            }
+        }
+    }
+
+    @Composable
+    private fun MiniSpectrum(modifier: Modifier = Modifier) {
+        val data = spectrum
+        val accent = MaterialTheme.colorScheme.primary
+        Canvas(modifier) {
+            val bars = 8
+            val width = size.width / bars
+            for (i in 0 until bars) {
+                val re = data.getOrElse(i * 6) { 0 }.toInt()
+                val im = data.getOrElse(i * 6 + 1) { 0 }.toInt()
+                val magnitude = (sqrt((re * re + im * im).toFloat()) / 180f).coerceIn(.12f, 1f)
+                val height = size.height * magnitude
+                drawRect(accent, Offset(i * width, size.height - height), Size(width * .65f, height))
             }
         }
     }
@@ -3002,6 +3222,7 @@ class MainActivity : ComponentActivity() {
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 TextButton(onClick = ::closeNowPlaying) { Text("←") }
                 Text("Сейчас играет", modifier = Modifier.weight(1f), fontWeight = FontWeight.SemiBold)
+                CurrentRemoteActions()
                 Text("${queueIndex + 1}/${queue.size}", style = MaterialTheme.typography.bodySmall)
             }
             Spacer(Modifier.height(8.dp))
@@ -3019,7 +3240,8 @@ class MainActivity : ComponentActivity() {
                     )
                 }, contentAlignment = Alignment.Center
             ) {
-                if (visualizerVisible) VisualizerView(Modifier.fillMaxWidth().height(260.dp))
+                if (visualizerVisible && (visualizer != null || spectrum.isNotEmpty()))
+                    VisualizerView(Modifier.fillMaxWidth().height(260.dp))
                 else cover?.let { art ->
                     Image(art, contentDescription = "Обложка трека", modifier = Modifier.fillMaxWidth().aspectRatio(1f),
                         contentScale = if (coverCrop) ContentScale.Crop else ContentScale.Fit)
@@ -3028,7 +3250,7 @@ class MainActivity : ComponentActivity() {
                     Text("Нет обложки", color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
-            Text("${if (visualizerVisible) listOf("Спектр", "Осциллограф", "Круг", "Зеркало", "Искры", "Ленты")[visualizerStyle] else "Обложка"} · смахните изображение влево или вправо",
+            Text("${if (visualizerVisible && (visualizer != null || spectrum.isNotEmpty())) listOf("Спектр", "Осциллограф", "Круг", "Зеркало", "Искры", "Ленты")[visualizerStyle] else "Обложка"} · смахните изображение влево или вправо",
                 style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(vertical = 8.dp))
             Text(currentTitle, style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold,
@@ -3048,7 +3270,7 @@ class MainActivity : ComponentActivity() {
             Row(Modifier.fillMaxWidth()) {
                 Text(formatTime(currentPositionMs), style = MaterialTheme.typography.bodySmall)
                 Spacer(Modifier.weight(1f))
-                Text(formatTime(durationMs), style = MaterialTheme.typography.bodySmall)
+                Text(if (durationMs > 0) formatTime(durationMs) else "—:—", style = MaterialTheme.typography.bodySmall)
             }
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly, verticalAlignment = Alignment.CenterVertically) {
                 ActionIcon("⏮", "Предыдущий трек", ::previousTrack)

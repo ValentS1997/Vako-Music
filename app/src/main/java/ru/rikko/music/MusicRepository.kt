@@ -60,8 +60,49 @@ object MusicRepository {
         return resolved
     }
 
+    fun recommendationSeeds(token: String): List<Track> {
+        val uid = ownUid(token)
+        val library = result(Http.getString("$API/users/$uid/likes/tracks", token))
+            .optJSONObject("library")?.optJSONArray("tracks") ?: JSONArray()
+        val ids = (0 until library.length()).mapNotNull { i ->
+            library.optJSONObject(i)?.optString("id")?.takeIf { it.isNotBlank() }
+        }.take(8)
+        if (ids.isEmpty()) return emptyList()
+        val body = "track-ids=${URLEncoder.encode(ids.joinToString(","), "UTF-8")}"
+        val items = JSONObject(Http.postString("$API/tracks", body, token)).optJSONArray("result") ?: JSONArray()
+        return (0 until items.length()).mapNotNull { i ->
+            items.optJSONObject(i)?.takeIf { it.optBoolean("available", true) }?.let(::shapeTrack)
+        }
+    }
+
     fun playlistTracks(item: UserPlaylist, token: String): List<Track> =
         YandexMusic.fetchPlaylistTracks(YmLink.PlaylistLink(item.owner, item.kind, null), token)
+
+    fun similarTracks(seed: Track, token: String): List<Track> {
+        val id = seed.trackId.toLongOrNull() ?: return emptyList()
+        val album = seed.albumId.toLongOrNull()
+        val key = if (album != null) "$id:$album" else "$id"
+        val items = result(Http.getString("$API/tracks/$key/similar", token)).optJSONArray("similarTracks")
+            ?: return emptyList()
+        return (0 until items.length()).mapNotNull { i -> items.optJSONObject(i)?.let(::shapeTrack) }
+    }
+
+    /** Explicit, one-time export; later local edits do not update the remote copy. */
+    fun createPlaylist(title: String, tracks: List<Track>, token: String): UserPlaylist {
+        require(title.isNotBlank()) { "Введите название плейлиста" }
+        require(tracks.isNotEmpty()) { "Подборка пуста" }
+        val uid = ownUid(token)
+        val body = "title=${URLEncoder.encode(title.trim(), "UTF-8")}&visibility=private"
+        val created = result(Http.postString("$API/users/$uid/playlists/create", body, token))
+        val kind = created.optString("kind").takeIf { it.isNotBlank() }
+            ?: throw IllegalStateException("Плейлист создан, но его ID не получен. Проверьте аккаунт перед повтором")
+        val item = UserPlaylist(uid, kind, title.trim(), 0)
+        try { addPlaylistTracks(item, tracks, token) }
+        catch (e: Exception) {
+            throw IllegalStateException("Плейлист создан, но треки не добавлены. Проверьте аккаунт перед повтором: ${e.message ?: "ошибка"}", e)
+        }
+        return item.copy(count = tracks.size)
+    }
 
     fun renamePlaylist(item: UserPlaylist, title: String, token: String) {
         val value = URLEncoder.encode(title.trim(), "UTF-8")
