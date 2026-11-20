@@ -278,7 +278,6 @@ class VideoPlayerActivity : ComponentActivity() {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
             setPadding(8.dp, 0, 8.dp, 0)
-            background = chrome.panel(14.dp.toFloat())
         }
         fun button(label: String, action: (View) -> Unit) {
             toolbar.addView(TextView(this).apply {
