@@ -14,6 +14,45 @@ data class MediaEdit(val uri: Uri, val name: String? = null, val path: String? =
 }
 
 object MediaEdits {
+    /** Проверяет назначения всего набора до первого изменения MediaStore. */
+    fun validatePlan(resolver: ContentResolver, edits: List<MediaEdit>): String? {
+        val targets = mutableSetOf<String>()
+        val sources = edits.map { it.uri.toString() }.toSet()
+        for (edit in edits) {
+            val current = try {
+                resolver.query(edit.uri, arrayOf(MediaStore.MediaColumns.DISPLAY_NAME,
+                    MediaStore.MediaColumns.RELATIVE_PATH), null, null, null)?.use { cursor ->
+                    if (!cursor.moveToFirst()) null else
+                        cursor.getString(0) to cursor.getString(1)
+                }
+            } catch (_: Exception) { null } ?: return "Файл больше не доступен: ${edit.uri.lastPathSegment}"
+            val name = edit.name ?: current.first
+            val path = edit.path ?: current.second
+            if (name.isNullOrBlank() || path.isNullOrBlank() ||
+                path.split('/').any { it == ".." } || '/' in name || '\\' in name
+            ) return "Некорректное имя или папка назначения"
+            val volume = try { MediaStore.getVolumeName(edit.uri) }
+                catch (_: Exception) { return "Не удалось определить накопитель" }
+            val key = "$volume/${path.trim('/').lowercase()}/${name.lowercase()}"
+            if (!targets.add(key)) return "Несколько файлов попадут в одно место: $name"
+            val collection = MediaStore.Audio.Media.getContentUri(volume)
+            val conflict = try {
+                resolver.query(collection, arrayOf(MediaStore.MediaColumns._ID),
+                    "${MediaStore.MediaColumns.DISPLAY_NAME}=? AND ${MediaStore.MediaColumns.RELATIVE_PATH}=?",
+                    arrayOf(name, path), null)?.use { cursor ->
+                    var found = false
+                    while (cursor.moveToNext()) {
+                        val uri = android.content.ContentUris.withAppendedId(collection, cursor.getLong(0))
+                        if (uri.toString() !in sources) { found = true; break }
+                    }
+                    found
+                } ?: return "Не удалось проверить папку назначения"
+            } catch (_: Exception) { return "Не удалось проверить папку назначения" }
+            if (conflict) return "В папке уже есть файл $name"
+        }
+        return null
+    }
+
     fun isMedia(song: LocalSong): Boolean = song.uri.authority == MediaStore.AUTHORITY
 
     fun displayName(resolver: ContentResolver, song: LocalSong): String =

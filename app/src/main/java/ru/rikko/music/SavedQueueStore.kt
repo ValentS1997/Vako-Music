@@ -1,7 +1,7 @@
 package ru.rikko.music
 
 import android.content.Context
-import android.util.Base64
+import java.util.Base64
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.ByteArrayInputStream
@@ -21,15 +21,15 @@ class SavedQueueStore(context: Context) {
     fun save(name: String, snapshot: Snapshot): Boolean {
         val clean = name.trim()
         if (clean.isEmpty() || snapshot.entries.isEmpty() || prefs.contains(clean)) return false
-        prefs.edit().putString(clean, encode(snapshot)).apply()
+        prefs.edit().putString(clean, Codec.encode(snapshot)).apply()
         return true
     }
 
     fun saveCurrent(snapshot: Snapshot) {
-        prefs.edit().putString("@current", encode(snapshot)).apply()
+        prefs.edit().putString("@current", Codec.encode(snapshot)).apply()
     }
 
-    fun load(name: String): Snapshot? = prefs.getString(name, null)?.let(::decode)
+    fun load(name: String): Snapshot? = prefs.getString(name, null)?.let(Codec::decode)
 
     fun loadCurrent(): Snapshot? = load("@current")
 
@@ -37,41 +37,45 @@ class SavedQueueStore(context: Context) {
         if (name != "@current") prefs.edit().remove(name).apply()
     }
 
-    private fun encode(snapshot: Snapshot): String {
-        val json = JSONObject().put("index", snapshot.index)
-        val items = JSONArray()
-        snapshot.entries.forEach { entry ->
-            val item = JSONObject()
-            if (entry.localUri != null) item.put("uri", entry.localUri)
-            entry.remote?.let { track ->
-                item.put("trackId", track.trackId).put("albumId", track.albumId)
-                    .put("title", track.title).put("artist", track.artist)
-                    .put("album", track.album).put("coverUri", track.coverUri)
+    /** Отдельный кодек: формат сохранённых очередей не зависит от Activity и сервиса. */
+    internal object Codec {
+        fun encode(snapshot: Snapshot): String {
+            val json = JSONObject().put("index", snapshot.index)
+            val items = JSONArray()
+            snapshot.entries.forEach { entry ->
+                val item = JSONObject()
+                if (entry.localUri != null) item.put("uri", entry.localUri)
+                entry.remote?.let { track ->
+                    item.put("trackId", track.trackId).put("albumId", track.albumId)
+                        .put("title", track.title).put("artist", track.artist)
+                        .put("album", track.album).put("coverUri", track.coverUri)
+                }
+                items.put(item)
             }
-            items.put(item)
+            json.put("items", items)
+            val bytes = ByteArrayOutputStream()
+            GZIPOutputStream(bytes).use { it.write(json.toString().toByteArray(Charsets.UTF_8)) }
+            return Base64.getEncoder().encodeToString(bytes.toByteArray())
         }
-        json.put("items", items)
-        val bytes = ByteArrayOutputStream()
-        GZIPOutputStream(bytes).use { it.write(json.toString().toByteArray(Charsets.UTF_8)) }
-        return Base64.encodeToString(bytes.toByteArray(), Base64.NO_WRAP)
-    }
 
-    private fun decode(value: String): Snapshot? = runCatching {
-        val bytes = Base64.decode(value, Base64.NO_WRAP)
-        val json = JSONObject(GZIPInputStream(ByteArrayInputStream(bytes)).use { it.readBytes().toString(Charsets.UTF_8) })
-        val items = json.optJSONArray("items") ?: JSONArray()
-        val entries = (0 until items.length()).mapNotNull { index ->
-            val item = items.optJSONObject(index) ?: return@mapNotNull null
-            val uri = item.optString("uri")
-            if (uri.isNotBlank()) Entry(localUri = uri) else {
-                val id = item.optString("trackId")
-                if (id.isBlank()) null else Entry(remote = Track(
-                    trackId = id, albumId = item.optString("albumId"),
-                    title = item.optString("title"), artist = item.optString("artist"),
-                    album = item.optString("album"), coverUri = item.optString("coverUri")
-                ))
+        fun decode(value: String): Snapshot? = runCatching {
+            val bytes = Base64.getDecoder().decode(value)
+            val json = JSONObject(GZIPInputStream(ByteArrayInputStream(bytes)).use { it.readBytes().toString(Charsets.UTF_8) })
+            val items = json.optJSONArray("items") ?: JSONArray()
+            val entries = (0 until items.length()).mapNotNull { index ->
+                val item = items.optJSONObject(index) ?: return@mapNotNull null
+                val uri = item.optString("uri")
+                if (uri.isNotBlank()) Entry(localUri = uri) else {
+                    val id = item.optString("trackId")
+                    if (id.isBlank()) null else Entry(remote = Track(
+                        trackId = id, albumId = item.optString("albumId"),
+                        title = item.optString("title"), artist = item.optString("artist"),
+                        album = item.optString("album"), coverUri = item.optString("coverUri")
+                    ))
+                }
             }
-        }
-        Snapshot(entries, json.optInt("index", 0))
-    }.getOrNull()
+            Snapshot(entries, if (entries.isEmpty()) 0 else
+                json.optInt("index", 0).coerceIn(0, entries.lastIndex))
+        }.getOrNull()
+    }
 }

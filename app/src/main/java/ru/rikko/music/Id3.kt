@@ -1,6 +1,8 @@
 package ru.rikko.music
 
 import java.io.ByteArrayOutputStream
+import java.io.OutputStream
+import java.io.File
 
 /**
  * Запись тегов ID3v2.3 в MP3: название, исполнитель, альбом, жанр, номер трека,
@@ -130,5 +132,46 @@ object Id3 {
         System.arraycopy(tag, 0, out, 0, tag.size)
         System.arraycopy(clean, 0, out, tag.size, clean.size)
         return out
+    }
+
+    /** Пишет тег и исходное аудио без создания второй полной копии MP3. */
+    fun writeTagged(mp3: ByteArray, track: Track, cover: ByteArray?, out: OutputStream) {
+        var start = 0
+        if (mp3.size >= 10 && mp3[0] == 'I'.code.toByte() &&
+            mp3[1] == 'D'.code.toByte() && mp3[2] == '3'.code.toByte()
+        ) {
+            val size = ((mp3[6].toInt() and 0x7f) shl 21) or
+                ((mp3[7].toInt() and 0x7f) shl 14) or
+                ((mp3[8].toInt() and 0x7f) shl 7) or (mp3[9].toInt() and 0x7f)
+            if (size + 10 < mp3.size) start = size + 10
+        }
+        out.write(buildTag(track, cover))
+        out.write(mp3, start, mp3.size - start)
+    }
+
+    fun writeTagged(file: File, track: Track, cover: ByteArray?, out: OutputStream) {
+        out.write(buildTag(track, cover))
+        file.inputStream().buffered().use { input ->
+            input.mark(10)
+            val header = ByteArray(10)
+            val read = input.read(header)
+            var skip = 0L
+            if (read == 10 && header[0] == 'I'.code.toByte() &&
+                header[1] == 'D'.code.toByte() && header[2] == '3'.code.toByte()
+            ) {
+                val size = ((header[6].toInt() and 0x7f) shl 21) or
+                    ((header[7].toInt() and 0x7f) shl 14) or
+                    ((header[8].toInt() and 0x7f) shl 7) or
+                    (header[9].toInt() and 0x7f)
+                if (size.toLong() + 10 < file.length()) skip = size.toLong() + 10
+            }
+            input.reset()
+            while (skip > 0) {
+                val moved = input.skip(skip)
+                if (moved <= 0) throw java.io.EOFException("Повреждён тег MP3")
+                skip -= moved
+            }
+            input.copyTo(out, 64 * 1024)
+        }
     }
 }

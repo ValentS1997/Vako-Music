@@ -45,57 +45,63 @@ class Downloader(private val context: Context) {
         return save(source, track, wantNativeFlac, onBytes)
     }
 
-    /**
-     * Скачивает, расшифровывает и сохраняет трек.
-     *
-     * В памяти держим одну копию файла. FLAC бывает по 40–60 МБ, а приложению
-     * на многих телефонах дают около 192 МБ. Раньше копий было до четырёх, и
-     * длинные треки роняли приложение посреди плейлиста (issue #76).
-     */
+    /** Скачивание и обработка через временный файл без полной копии трека в heap. */
     fun save(
         source: AudioSource,
         track: Track,
         wantNativeFlac: Boolean,
         onBytes: ((Long, Long) -> Unit)? = null,
     ): Result {
-        val bytes = Http.getBytes(source.url, onBytes)
-
-        // Лучше честная ошибка, чем молча сохранённый пустой файл (обсуждение #51)
-        if (bytes.size < 1024) {
-            throw Exception(
-                "Аудио скачалось пустым (${bytes.size} байт). Обычно это значит, " +
-                        "что ссылка устарела — попробуйте ещё раз."
-            )
-        }
-
-        source.encryptionKey?.let { Crypto.decryptAesCtrInPlace(bytes, it) }
-
-        val cover = try {
-            YandexMusic.coverUrl(track.coverUri)?.let { Http.getBytes(it) }
-        } catch (e: Exception) { null }
-
-        // Определяем формат по содержимому: поле codec из API бывает неточным
-        val name = track.baseName()
-        return when {
-            FlacRemux.isNativeFlac(bytes) ->
-                saveToMusic("$name.flac", "audio/flac") { it.write(bytes) }
-
-            FlacRemux.isMp4(bytes) -> {
-                val plan = if (wantNativeFlac) {
-                    try { FlacRemux.plan(bytes) } catch (e: FlacRemux.NotFlacMp4) { null }
-                } else null
-                if (plan != null) {
-                    saveToMusic("$name.flac", "audio/flac") { FlacRemux.write(bytes, plan, track, cover, it) }
-                } else {
-                    saveToMusic("$name.m4a", "audio/mp4") { it.write(bytes) }
+        val temporary = File.createTempFile("vako-audio-", ".part", context.cacheDir)
+        try {
+            Http.downloadToFile(source.url, temporary, onBytes)
+            if (temporary.length() < 1024) throw Exception("Аудиофайл пустой или неполный")
+            source.encryptionKey?.let { Crypto.decryptAesCtrFileInPlace(temporary, it) }
+            val header = temporary.inputStream().use { input ->
+                ByteArray(16).also { input.read(it) }
+            }
+            val cover = try {
+                YandexMusic.coverUrl(track.coverUri)?.let {
+                    Http.getBytes(it, maxBytes = 4 * 1024 * 1024)
                 }
+            } catch (_: Exception) { null }
+            val name = track.baseName()
+            return when {
+                FlacRemux.isNativeFlac(header) ->
+                    saveToMusic("$name.flac", "audio/flac") { out -> temporary.inputStream().use { it.copyTo(out) } }
+                FlacRemux.isMp4(header) -> {
+                    val plan = if (wantNativeFlac) {
+                        try { FlacRemux.plan(temporary) } catch (_: FlacRemux.NotFlacMp4) { null }
+                    } else null
+                    if (plan != null)
+                        saveToMusic("$name.flac", "audio/flac") {
+                            FlacRemux.write(temporary, plan, track, cover, it)
+                        }
+                    else {
+                        if (source.codec.equals("flac", ignoreCase = true))
+                            throw Exception("Полученный FLAC в MP4 повреждён или не поддерживается")
+                        saveToMusic("$name.m4a", "audio/mp4") { out ->
+                            temporary.inputStream().use { it.copyTo(out) }
+                        }
+                    }
+                }
+                isMp3(header) ->
+                    saveToMusic("$name.mp3", "audio/mpeg") {
+                        Id3.writeTagged(temporary, track, cover, it)
+                    }
+                else -> throw Exception("Получен неподдерживаемый аудиоформат")
             }
-
-            else -> {
-                val tagged = Id3.attach(bytes, track, cover)
-                saveToMusic("$name.mp3", "audio/mpeg") { it.write(tagged) }
-            }
+        } finally {
+            temporary.delete()
         }
+    }
+
+    private fun isMp3(bytes: ByteArray): Boolean {
+        if (bytes.size < 4) return false
+        if (bytes[0] == 'I'.code.toByte() && bytes[1] == 'D'.code.toByte() &&
+            bytes[2] == '3'.code.toByte()) return true
+        return (bytes[0].toInt() and 0xff) == 0xff &&
+            (bytes[1].toInt() and 0xe0) == 0xe0
     }
 
     /** Сохранение в общую папку «Музыка/MusicDownloader». */
@@ -120,14 +126,17 @@ class Downloader(private val context: Context) {
             try {
                 val out = resolver.openOutputStream(uri) ?: throw Exception("Не удалось записать файл")
                 BufferedOutputStream(out, 256 * 1024).use(write)
+                values.clear()
+                values.put(MediaStore.MediaColumns.IS_PENDING, 0)
+                if (resolver.update(uri, values, null, null) != 1)
+                    throw Exception("Не удалось завершить сохранение файла")
             } catch (e: Throwable) {
-                // Недописанный файл не оставляем
-                resolver.delete(uri, null, null)
+                // Ошибка записи и ошибка публикации одинаково требуют очистки.
+                try { resolver.delete(uri, null, null) } catch (cleanup: Exception) {
+                    e.addSuppressed(cleanup)
+                }
                 throw e
             }
-            values.clear()
-            values.put(MediaStore.MediaColumns.IS_PENDING, 0)
-            resolver.update(uri, values, null, null)
         } else {
             @Suppress("DEPRECATION")
             val dir = File(

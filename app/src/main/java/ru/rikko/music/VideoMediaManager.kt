@@ -13,6 +13,16 @@ data class VideoEdit(val uri: Uri, val name: String? = null, val path: String? =
 }
 
 object VideoMediaManager {
+    data class EditReport(val changed: Int, val failed: List<VideoEdit>)
+    data class CopyReport(val copied: Int, val failed: List<LocalVideo>)
+
+    fun applyEdits(context: Context, edits: List<VideoEdit>): EditReport {
+        val report = BatchOperations.run(edits) { edit ->
+            context.contentResolver.update(edit.uri, edit.values(), null, null) > 0
+        }
+        return EditReport(report.succeeded.size, report.failed.map { it.item })
+    }
+
     fun rename(video: LocalVideo, value: String): VideoEdit {
         val clean = validName(value)
         val extension = video.name.substringAfterLast('.', "").takeIf { it.isNotEmpty() }?.let { ".$it" }.orEmpty()
@@ -49,8 +59,9 @@ object VideoMediaManager {
             .map { VideoEdit(it.uri, path = target + it.path.removePrefix(oldPath) + "/") }
     }
 
-    fun copy(context: Context, videos: List<LocalVideo>, volume: String, path: String): Int {
+    fun copy(context: Context, videos: List<LocalVideo>, volume: String, path: String): CopyReport {
         var count = 0
+        val failed = mutableListOf<LocalVideo>()
         for (video in videos) {
             val values = ContentValues().apply {
                 put(MediaStore.MediaColumns.DISPLAY_NAME, video.name)
@@ -58,7 +69,13 @@ object VideoMediaManager {
                 put(MediaStore.MediaColumns.RELATIVE_PATH, path.trim('/') + "/")
                 put(MediaStore.MediaColumns.IS_PENDING, 1)
             }
-            val destination = context.contentResolver.insert(MediaStore.Video.Media.getContentUri(volume), values) ?: continue
+            val destination = try {
+                context.contentResolver.insert(MediaStore.Video.Media.getContentUri(volume), values)
+            } catch (_: Exception) { null }
+            if (destination == null) {
+                failed += video
+                continue
+            }
             try {
                 context.contentResolver.openInputStream(video.uri).use { input ->
                     requireNotNull(input) { "Не удалось открыть ${video.name}" }
@@ -67,14 +84,17 @@ object VideoMediaManager {
                         input.copyTo(output)
                     }
                 }
-                context.contentResolver.update(destination, ContentValues().apply { put(MediaStore.MediaColumns.IS_PENDING, 0) }, null, null)
+                if (context.contentResolver.update(destination,
+                        ContentValues().apply { put(MediaStore.MediaColumns.IS_PENDING, 0) }, null, null) <= 0
+                ) throw IllegalStateException("Не удалось завершить сохранение видео")
                 count++
             } catch (error: Exception) {
-                context.contentResolver.delete(destination, null, null)
-                throw error
+                try { context.contentResolver.delete(destination, null, null) }
+                catch (_: Exception) { }
+                failed += video
             }
         }
-        return count
+        return CopyReport(count, failed)
     }
 
     private fun validName(value: String): String = value.trim().also {

@@ -18,5 +18,12 @@ jobs:
           distribution: temurin
           java-version: '17'
       - uses: gradle/actions/setup-gradle@v6
-      - name: Build and lint
-        run: ./gradlew assembleDebug lintDebug --no-daemon --console=plain
+      - name: Test, build and lint
+        run: ./gradlew testDebugUnitTest assembleDebug lintDebug --no-daemon --console=plain
+      - name: Upload unit test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: unit-test-results
+          path: app/build/test-results/testDebugUnitTest/
+          if-no-files-found: ignore
