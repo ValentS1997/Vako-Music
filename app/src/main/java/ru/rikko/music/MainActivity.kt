@@ -8,6 +8,7 @@ import android.app.Activity
 import android.Manifest
 import android.os.Build
 import android.provider.MediaStore
+import android.provider.OpenableColumns
 import android.app.RecoverableSecurityException
 import android.media.MediaPlayer
 import android.media.MediaMetadataRetriever
@@ -30,6 +31,8 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
@@ -99,6 +102,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.onClick
 import androidx.core.content.ContextCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.compose.ui.graphics.toArgb
@@ -115,6 +119,7 @@ import java.util.concurrent.RejectedExecutionException
 import kotlin.math.cos
 import kotlin.math.sin
 import kotlin.math.sqrt
+import kotlin.math.roundToInt
 
 
 class MainActivity : ComponentActivity() {
@@ -158,7 +163,7 @@ class MainActivity : ComponentActivity() {
     private var pendingDeleteQueueName by mutableStateOf("")
     private var queueRestored by mutableStateOf(false)
     private var yandexEnabled by mutableStateOf(true)
-    private var videoEnabled by mutableStateOf(false)
+    private var videoEnabled by mutableStateOf(true)
     private var playlistsEnabled by mutableStateOf(true)
     private var foldersEnabled by mutableStateOf(true)
     private var recentEnabled by mutableStateOf(true)
@@ -202,6 +207,11 @@ class MainActivity : ComponentActivity() {
     private var query by mutableStateOf("")
     private var linkInput by mutableStateOf("")
     private var activeTab by mutableStateOf(0)
+    private var moduleOrder by mutableStateOf(listOf(0, 1, 2, 3))
+    private var navigationVisible by mutableStateOf(true)
+    private var navigationTick by mutableStateOf(0)
+    private var draggedModule by mutableStateOf<Int?>(null)
+    private var navigationDragOffset = 0f
     private var results by mutableStateOf<List<Track>>(emptyList())
     private var artists by mutableStateOf<List<MusicRepository.Artist>>(emptyList())
     private var selectedArtist by mutableStateOf("")
@@ -235,6 +245,9 @@ class MainActivity : ComponentActivity() {
     private var downloading by mutableStateOf(false)
     private var progress by mutableStateOf(0f)
     private var status by mutableStateOf("")
+    private var checkingUpdate by mutableStateOf(false)
+    private var updateMessage by mutableStateOf("")
+    private var updateUrl by mutableStateOf("")
     private var currentTitle by mutableStateOf("")
     private var currentArtist by mutableStateOf("")
     private var playing by mutableStateOf(false)
@@ -271,6 +284,7 @@ class MainActivity : ComponentActivity() {
     private var spectrum by mutableStateOf(ByteArray(0))
     private var playbackService: PlaybackService? = null
     private var scanRequested = false
+    private var pendingExternalAudio: LocalSong? = null
     private val player: MediaPlayer? get() = playbackService?.player
     private val playbackListener = object : PlaybackService.Listener {
         override fun onPrepared(duration: Int) {
@@ -310,6 +324,10 @@ class MainActivity : ComponentActivity() {
             service.listener = playbackListener
             sleepDeadline = service.sleepDeadline
             sleepRemainingMs = (sleepDeadline - SystemClock.elapsedRealtime()).coerceAtLeast(0L)
+            pendingExternalAudio?.let { song ->
+                pendingExternalAudio = null
+                playLocal(song, listOf(song))
+            }
             if (service.title.isNotBlank()) {
                 currentTitle = service.title
                 currentArtist = service.artist
@@ -366,12 +384,16 @@ class MainActivity : ComponentActivity() {
         tokenStore = TokenStore(this)
         libraryStore = LibraryStore(this)
         appPreferences = AppPreferences(this)
+        selectedFolder = appPreferences.string("last_music_folder", "")
+        moduleOrder = (appPreferences.string("module_order", "0,1,2,3").split(',')
+            .mapNotNull(String::toIntOrNull).filter { it in 0..3 } + listOf(0, 1, 2, 3)).distinct()
         savedQueueStore = SavedQueueStore(this)
         savedQueueNames = savedQueueStore.names()
         yandexEnabled = appPreferences.enabled("yandex")
-        videoEnabled = appPreferences.enabled("video", false)
+        videoEnabled = appPreferences.enabled("video", true)
         playlistsEnabled = appPreferences.enabled("playlists")
         foldersEnabled = appPreferences.enabled("folders")
+        if (selectedFolder.isNotEmpty() && foldersEnabled) libraryView = 2
         recentEnabled = appPreferences.enabled("recent")
         albumsEnabled = appPreferences.enabled("albums")
         artistsEnabled = appPreferences.enabled("artists")
@@ -439,10 +461,22 @@ class MainActivity : ComponentActivity() {
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
+        setIntent(intent)
         acceptSharedLink(intent)
     }
 
     private fun acceptSharedLink(intent: Intent?) {
+        if (intent?.action == Intent.ACTION_VIEW && intent.data != null) {
+            val uri = intent.data!!
+            val name = runCatching {
+                contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)
+                    ?.use { if (it.moveToFirst()) it.getString(0) else null }
+            }.getOrNull() ?: uri.lastPathSegment ?: "Аудиофайл"
+            val song = LocalSong(uri, name.substringBeforeLast('.', name), fileName = name)
+            activeTab = 0
+            if (playbackService == null) pendingExternalAudio = song else playLocal(song, listOf(song))
+            return
+        }
         val shared = intent?.getStringExtra(Intent.EXTRA_TEXT).orEmpty()
         if (shared.contains("music.yandex.")) {
             linkInput = Regex("https?://\\S+").find(shared)?.value ?: shared
@@ -450,6 +484,29 @@ class MainActivity : ComponentActivity() {
             if (!yandexEnabled) status = "Включите модуль Яндекса в настройках"
             remoteView = 2
         }
+    }
+
+    private fun checkForUpdates() {
+        if (checkingUpdate) return
+        checkingUpdate = true
+        updateMessage = "Проверяем релизы GitHub…"
+        updateUrl = ""
+        Thread {
+            val result = runCatching { ReleaseChecker.latest() }
+            runOnUiThread {
+                if (isDestroyed || isFinishing) return@runOnUiThread
+                checkingUpdate = false
+                result.onSuccess { release ->
+                    val installed = packageManager.getPackageInfo(packageName, 0).versionName ?: "0.0.0"
+                    updateMessage = when {
+                        release == null -> "Опубликованных релизов пока нет. Установлена версия $installed."
+                        ReleaseChecker.isNewer(release.version, installed) -> "Доступна версия ${release.version}. Установлена $installed."
+                        else -> "Установлена актуальная версия $installed."
+                    }
+                    if (release != null && ReleaseChecker.isNewer(release.version, installed)) updateUrl = release.pageUrl
+                }.onFailure { updateMessage = "Не удалось проверить обновления: ${it.message ?: "ошибка сети"}" }
+            }
+        }.start()
     }
 
     private fun refreshLibrary() {
@@ -1177,6 +1234,21 @@ class MainActivity : ComponentActivity() {
     @Composable
     private fun App() {
         BackHandler { navigateBack() }
+        LaunchedEffect(selectedFolder) { appPreferences.setString("last_music_folder", selectedFolder) }
+        LaunchedEffect(navigationVisible, navigationTick, showNowPlaying) {
+            if (navigationVisible && !showNowPlaying) {
+                delay(15_000)
+                navigationVisible = false
+            }
+        }
+        LaunchedEffect(localSongs) {
+            if (localSongs.isNotEmpty() && selectedFolder.isNotEmpty()) {
+                val root = buildFolderTree(localSongs)
+                var path = selectedFolder
+                while (path.isNotEmpty() && root.find(path) == null) path = path.substringBeforeLast('/', "")
+                if (path != selectedFolder) selectedFolder = path
+            }
+        }
         LaunchedEffect(keepScreenOn, playing) {
             if (keepScreenOn && playing) window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
             else window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
@@ -1201,27 +1273,76 @@ class MainActivity : ComponentActivity() {
                     if (currentTitle.isNotBlank()) PlayerBar()
                     HorizontalDivider(color = MaterialTheme.colorScheme.surfaceVariant)
                     Surface(color = MaterialTheme.colorScheme.surface) {
-                        Row(Modifier.fillMaxWidth().height(52.dp), verticalAlignment = Alignment.CenterVertically) {
-                            (listOf(0 to "Медиатека") +
-                                (if (yandexEnabled) listOf(1 to "Яндекс") else emptyList()) +
-                                (if (videoEnabled) listOf(2 to "Видео") else emptyList()) +
-                                listOf(3 to "Настройки")).forEach { (index, label) ->
-                                TextButton(onClick = {
-                                    activeTab = index
-                                    if (index == 3) settingsPage = 0
-                                    showQueue = false
-                                    showSound = false
-                                    selectedLocalUris = emptySet()
-                                    selectedRemoteTracks = emptyList()
-                                }, modifier = Modifier.weight(1f)) {
-                                    Text(
-                                        label,
-                                        color = if (activeTab == index) MaterialTheme.colorScheme.primary
-                                        else MaterialTheme.colorScheme.onSurfaceVariant,
-                                        fontWeight = if (activeTab == index) FontWeight.Bold else FontWeight.Normal
-                                    )
+                        if (navigationVisible) {
+                            val labels = mapOf(0 to "Медиатека", 1 to "Яндекс", 2 to "Видео", 3 to "Настройки")
+                            val visible = moduleOrder.filter { it == 0 || it == 3 ||
+                                (it == 1 && yandexEnabled) || (it == 2 && videoEnabled) }
+                            Row(Modifier.fillMaxWidth().height(52.dp), verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(3.dp)) {
+                                visible.forEach { index ->
+                                    val openModule = {
+                                        activeTab = index
+                                        if (index == 3) settingsPage = 0
+                                        showQueue = false; showSound = false
+                                        selectedLocalUris = emptySet(); selectedRemoteTracks = emptyList()
+                                        navigationTick++
+                                    }
+                                    Box(modifier = Modifier.weight(1f).fillMaxSize()
+                                        .background(if (activeTab == index) MaterialTheme.colorScheme.primary.copy(alpha = 0.14f)
+                                            else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f), RoundedCornerShape(8.dp))
+                                        .semantics {
+                                            contentDescription = labels[index].orEmpty()
+                                            onClick { openModule(); true }
+                                        }
+                                        .pointerInput(index, moduleOrder, visible) {
+                                            awaitEachGesture {
+                                                val down = awaitFirstDown(requireUnconsumed = false)
+                                                var dragging = false
+                                                var movedBeforeHold = false
+                                                while (true) {
+                                                    val change = awaitPointerEvent().changes.firstOrNull { it.id == down.id } ?: break
+                                                    val dx = change.position.x - down.position.x
+                                                    val dy = change.position.y - down.position.y
+                                                    val held = change.uptimeMillis - down.uptimeMillis >= viewConfiguration.longPressTimeoutMillis
+                                                    if (!held && (kotlin.math.abs(dx) > viewConfiguration.touchSlop ||
+                                                                kotlin.math.abs(dy) > viewConfiguration.touchSlop)) {
+                                                        movedBeforeHold = true
+                                                        break
+                                                    }
+                                                    if (held && kotlin.math.abs(dx) > viewConfiguration.touchSlop) {
+                                                        dragging = true
+                                                        draggedModule = index
+                                                        navigationDragOffset = dx
+                                                        change.consume()
+                                                    }
+                                                    if (!change.pressed) {
+                                                        if (dragging) {
+                                                            val from = visible.indexOf(index)
+                                                            val slot = (window.decorView.width.toFloat() / visible.size).coerceAtLeast(1f)
+                                                            val to = (from + (navigationDragOffset / slot).roundToInt()).coerceIn(0, visible.lastIndex)
+                                                            if (from >= 0 && to != from) {
+                                                                val reordered = visible.toMutableList().apply { add(to, removeAt(from)) }
+                                                                moduleOrder = (reordered + moduleOrder.filter { it !in visible }).distinct()
+                                                                appPreferences.setString("module_order", moduleOrder.joinToString(","))
+                                                            }
+                                                            draggedModule = null
+                                                            navigationTick++
+                                                        } else if (!movedBeforeHold) openModule()
+                                                        break
+                                                    }
+                                                }
+                                            }
+                                        }, contentAlignment = Alignment.Center) {
+                                        Text(labels[index].orEmpty(),
+                                            color = if (activeTab == index || draggedModule == index) MaterialTheme.colorScheme.primary
+                                                else MaterialTheme.colorScheme.onSurfaceVariant,
+                                            fontWeight = if (activeTab == index) FontWeight.Bold else FontWeight.Normal)
+                                    }
                                 }
                             }
+                        } else {
+                            TextButton(onClick = { navigationVisible = true; navigationTick++ },
+                                modifier = Modifier.fillMaxWidth().height(34.dp)) { Text("▴  Разделы") }
                         }
                     }
                 }
@@ -2266,13 +2387,18 @@ class MainActivity : ComponentActivity() {
                 SettingLink("Медиатека", "Сортировка, имена файлов и действия с треками", 2)
                 SettingLink("Воспроизведение", "Повтор, перемешивание, таймер и эквалайзер", 3)
                 SettingLink("Внешний вид", "Начальный экран, компактность и обложки", 4)
-                if (yandexEnabled) SettingLink("Яндекс Музыка", "Качество загрузки и любимые треки", 5)
+                SettingLink("Яндекс Музыка и аккаунт", "Подключение, загрузка и любимые треки", 5)
                 if (videoEnabled) SettingLink("Видео", "Жесты и уровни яркости и громкости", 8)
-                SettingLink("Аккаунт", "Подключение Яндекс Музыки", 6)
+                Spacer(Modifier.height(16.dp))
+                TextButton(onClick = ::checkForUpdates, enabled = !checkingUpdate) { Text("Проверить обновление") }
+                if (updateMessage.isNotBlank()) Text(updateMessage, style = MaterialTheme.typography.bodySmall)
+                if (updateUrl.isNotBlank()) TextButton(onClick = {
+                    startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(updateUrl)))
+                }) { Text("Открыть релиз на GitHub") }
             } else {
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                     TextButton(onClick = { settingsPage = if (settingsPage == 7) 4 else 0 }) { Text("←") }
-                    Text(listOf("", "Разделы приложения", "Медиатека", "Воспроизведение", "Внешний вид", "Яндекс Музыка", "Аккаунт", "Цвета темы", "Видео")[settingsPage],
+                    Text(listOf("", "Разделы приложения", "Медиатека", "Воспроизведение", "Внешний вид", "Яндекс Музыка и аккаунт", "Аккаунт", "Цвета темы", "Видео")[settingsPage],
                         style = MaterialTheme.typography.titleLarge)
                 }
                 Spacer(Modifier.height(8.dp))
@@ -2373,7 +2499,7 @@ class MainActivity : ComponentActivity() {
                             keepScreenOn = enabled; appPreferences.setEnabled("keep_screen_on", enabled)
                         }
                     }
-                    5 -> {
+                    5, 6 -> {
                         Text("Качество загружаемых файлов", style = MaterialTheme.typography.titleMedium)
                         SettingChoice(listOf("Авто", "FLAC", "MP3"),
                             listOf(Quality.AUTO, Quality.FLAC, Quality.MP3_320).indexOf(downloadQuality)) {
@@ -2385,8 +2511,8 @@ class MainActivity : ComponentActivity() {
                         TextButton(onClick = {
                             activeTab = 1; remoteView = 1; openLikedTracks()
                         }) { Text("Открыть «Мне нравится»") }
-                    }
-                    6 -> {
+                        Spacer(Modifier.height(16.dp))
+                        Text("Аккаунт", style = MaterialTheme.typography.titleMedium)
                         Text(if (token.isBlank()) "Для каталога Яндекса нужен токен вашего аккаунта."
                             else "Аккаунт подключён. Токен зашифрован на этом устройстве.",
                             color = MaterialTheme.colorScheme.onSurfaceVariant)

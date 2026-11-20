@@ -14,6 +14,8 @@ import androidx.activity.result.IntentSenderRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -66,6 +68,8 @@ object VideoModule {
         val scope = rememberCoroutineScope()
         val playlists = remember { VideoPlaylistStore(context) }
         val historyStore = remember { VideoHistoryStore(context) }
+        val marks = remember { VideoMarksStore(context) }
+        val navPrefs = remember { context.getSharedPreferences("vako_video_nav", 0) }
         val lifecycleOwner = LocalLifecycleOwner.current
         val permission = if (Build.VERSION.SDK_INT >= 33) Manifest.permission.READ_MEDIA_VIDEO else Manifest.permission.READ_EXTERNAL_STORAGE
         var allowed by remember { mutableStateOf(context.checkSelfPermission(permission) == PackageManager.PERMISSION_GRANTED) }
@@ -73,9 +77,11 @@ object VideoModule {
         var playlistList by remember { mutableStateOf(playlists.all()) }
         var history by remember { mutableStateOf(historyStore.all()) }
         var error by remember { mutableStateOf("") }
-        var selectedVolume by remember { mutableStateOf<String?>(null) }
-        var folder by remember { mutableStateOf("") }
-        var tab by remember { mutableStateOf(0) } // folders, all, playlists, recent
+        var selectedVolume by remember { mutableStateOf(navPrefs.getString("volume", null)) }
+        var folder by remember { mutableStateOf(navPrefs.getString("folder", "").orEmpty()) }
+        var tab by remember { mutableStateOf(0) } // folders, all, playlists, recent, favorites, bookmarks
+        var favoriteUris by remember { mutableStateOf(marks.favorites()) }
+        var bookmarks by remember { mutableStateOf(marks.bookmarks()) }
         var selectedPlaylist by remember { mutableStateOf<String?>(null) }
         var selectedUris by remember { mutableStateOf<Set<String>>(emptySet()) }
         var sort by remember { mutableStateOf(1) }
@@ -83,7 +89,11 @@ object VideoModule {
         var refresh by remember { mutableStateOf(0) }
         DisposableEffect(lifecycleOwner) {
             val observer = LifecycleEventObserver { _, event ->
-                if (event == Lifecycle.Event.ON_RESUME) history = historyStore.all()
+                if (event == Lifecycle.Event.ON_RESUME) {
+                    history = historyStore.all()
+                    favoriteUris = marks.favorites()
+                    bookmarks = marks.bookmarks()
+                }
             }
             lifecycleOwner.lifecycle.addObserver(observer)
             onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
@@ -103,6 +113,9 @@ object VideoModule {
         val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {
             allowed = it
             if (it) refresh++
+        }
+        LaunchedEffect(selectedVolume, folder) {
+            navPrefs.edit().putString("volume", selectedVolume).putString("folder", folder).apply()
         }
         val fileLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
             if (uri != null) {
@@ -174,13 +187,18 @@ object VideoModule {
                 addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
             }, "Поделиться видео"))
         }
-        fun open(video: LocalVideo, playlist: String? = null) {
+        fun open(video: LocalVideo, playlist: String? = null, queue: List<LocalVideo> = videos) {
             onOpenVideo()
             context.startActivity(Intent(context, VideoPlayerActivity::class.java).apply {
                 data = video.uri
                 putExtra(VideoPlayerActivity.EXTRA_TITLE, video.name)
                 putExtra(VideoPlayerActivity.EXTRA_DURATION, video.durationMs)
                 if (playlist != null) putExtra(VideoPlayerActivity.EXTRA_PLAYLIST, playlist)
+                val position = queue.indexOfFirst { it.uri == video.uri }
+                val nearby = if (position < 0) listOf(video) else
+                    queue.subList((position - 250).coerceAtLeast(0), (position + 251).coerceAtMost(queue.size))
+                putStringArrayListExtra(VideoPlayerActivity.EXTRA_QUEUE, ArrayList(nearby.map { it.uri.toString() }))
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
             })
         }
         fun openRecent(entry: VideoHistoryEntry) {
@@ -195,6 +213,22 @@ object VideoModule {
                 putExtra(VideoPlayerActivity.EXTRA_TITLE, video.name)
                 putExtra(VideoPlayerActivity.EXTRA_DURATION, video.durationMs)
                 putExtra(VideoPlayerActivity.EXTRA_START_POSITION, entry.positionMs)
+                val recentQueue = history.mapNotNull { item -> videos.firstOrNull { it.uri.toString() == item.uri } }
+                putStringArrayListExtra(VideoPlayerActivity.EXTRA_QUEUE, ArrayList(recentQueue.map { it.uri.toString() }))
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            })
+        }
+        fun openBookmark(bookmark: VideoBookmark) {
+            val video = videos.firstOrNull { it.uri.toString() == bookmark.uri }
+            if (video == null) { error = "Видео закладки недоступно"; return }
+            onOpenVideo()
+            context.startActivity(Intent(context, VideoPlayerActivity::class.java).apply {
+                data = video.uri
+                putExtra(VideoPlayerActivity.EXTRA_TITLE, video.name)
+                putExtra(VideoPlayerActivity.EXTRA_DURATION, video.durationMs)
+                putExtra(VideoPlayerActivity.EXTRA_START_POSITION, bookmark.positionMs)
+                putStringArrayListExtra(VideoPlayerActivity.EXTRA_QUEUE, arrayListOf(video.uri.toString()))
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
             })
         }
         fun sorted(list: List<LocalVideo>): List<LocalVideo> = when (sort) {
@@ -250,6 +284,16 @@ object VideoModule {
         LaunchedEffect(allowed, refresh) {
             if (allowed) try {
                 videos = withContext(Dispatchers.IO) { VideoStore.scan(context) }
+                if (selectedVolume != null && videos.none { it.volume == selectedVolume }) {
+                    selectedVolume = null; folder = ""
+                } else if (selectedVolume != null) {
+                    var candidate = folder.trimEnd('/')
+                    while (candidate.isNotEmpty() && videos.none { it.volume == selectedVolume &&
+                            (it.path == candidate || it.path.startsWith("$candidate/")) }) {
+                        candidate = candidate.substringBeforeLast('/', "")
+                    }
+                    folder = if (candidate.isEmpty()) "" else "$candidate/"
+                }
                 playlistList = playlists.all()
                 history = historyStore.all()
             } catch (exception: Exception) { error = exception.localizedMessage ?: "Не удалось прочитать видео" }
@@ -260,6 +304,7 @@ object VideoModule {
             1 -> sorted(videos)
             2 -> selectedPlaylist?.let { name -> playlistList.firstOrNull { it.name == name }?.items?.mapNotNull(videoByUri::get) }.orEmpty()
             3 -> history.mapNotNull { videoByUri[it.uri] }
+            4 -> sorted(videos.filter { it.uri.toString() in favoriteUris })
             else -> if (selectedVolume == null) emptyList() else sorted(videos.filter { it.volume == selectedVolume && it.path == folder.trimEnd('/') })
         }
         val folders = if (tab != 0) emptyList() else if (selectedVolume == null) videos.map { it.volume }.distinct().sorted()
@@ -295,8 +340,8 @@ object VideoModule {
                 TextButton(onClick = openSettings) { Text("Настроить разделы") }
                 return@Column
             }
-            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                listOf("Папки", "Все", "Плейлисты", "Недавние").forEachIndexed { index, label ->
+            Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                listOf("Папки", "Все", "Плейлисты", "Недавние", "Избранное", "Закладки").forEachIndexed { index, label ->
                     TextButton(onClick = { tab = index; selectedUris = emptySet() }) {
                         Text(label, color = if (tab == index) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
                     }
@@ -360,8 +405,18 @@ object VideoModule {
             }
             if (videos.isEmpty() && tab != 2) Text("Видео не найдено. Отдельный файл можно открыть через системный выбор.", color = MaterialTheme.colorScheme.onSurfaceVariant)
             if (tab == 3 && history.isEmpty()) Text("История просмотра пока пуста.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            if (tab == 4 && favoriteUris.isEmpty()) Text("Избранных видео пока нет.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            if (tab == 5 && bookmarks.isEmpty()) Text("Закладок пока нет. Добавьте фрагмент из меню видеоплеера.", color = MaterialTheme.colorScheme.onSurfaceVariant)
             LazyColumn(Modifier.weight(1f)) {
-                if (tab == 2 && selectedPlaylist == null) {
+                if (tab == 5) {
+                    items(bookmarks, key = { "${it.uri}:${it.positionMs}" }) { mark ->
+                        VideoRow(mark.label.ifBlank { mark.title }, "${mark.title} · ${VideoStore.formatDuration(mark.positionMs)}",
+                            onClick = { openBookmark(mark) },
+                            menu = listOf("Удалить закладку" to {
+                                marks.removeBookmark(mark); bookmarks = marks.bookmarks()
+                            }))
+                    }
+                } else if (tab == 2 && selectedPlaylist == null) {
                     items(playlistList, key = { it.name }) { playlist ->
                         VideoRow(playlist.name, "${playlist.items.size} видео", onClick = { selectedPlaylist = playlist.name },
                             menu = listOf(
@@ -395,11 +450,14 @@ object VideoModule {
                         }
                         VideoRow(video.name, details,
                             checked = uri in selectedUris,
-                            onClick = { if (selectedUris.isNotEmpty()) selectedUris = if (uri in selectedUris) selectedUris - uri else selectedUris + uri else if (tab == 3) openRecent(history.first { it.uri == uri }) else open(video, selectedPlaylist) },
+                            onClick = { if (selectedUris.isNotEmpty()) selectedUris = if (uri in selectedUris) selectedUris - uri else selectedUris + uri else if (tab == 3) openRecent(history.first { it.uri == uri }) else open(video, selectedPlaylist, visibleVideos) },
                             onLongClick = { selectedUris = selectedUris + uri },
                             menu = buildList {
                                 add("Выбрать" to { selectedUris = selectedUris + uri })
                                 add("В плейлист…" to { playlistPicker = listOf(video) })
+                                add((if (uri in favoriteUris) "Убрать из избранного" else "В избранное") to {
+                                    marks.toggleFavorite(uri); favoriteUris = marks.favorites()
+                                })
                                 if (selectedPlaylist != null) {
                                     add("Убрать из плейлиста" to {
                                         playlists.remove(selectedPlaylist!!, uri); playlistList = playlists.all()
