@@ -7,6 +7,7 @@ import android.content.pm.ActivityInfo
 import android.content.Context
 import android.content.Intent
 import android.graphics.Color
+import android.graphics.drawable.GradientDrawable
 import android.net.Uri
 import android.os.Bundle
 import android.os.Build
@@ -286,7 +287,10 @@ class VideoPlayerActivity : ComponentActivity() {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
             setPadding(8.dp, 0, 8.dp, 0)
-            setBackgroundColor(0xCC111711.toInt())
+            background = GradientDrawable().apply {
+                setColor(0xCC111711.toInt())
+                cornerRadius = 14.dp.toFloat()
+            }
         }
         fun button(label: String, action: (View) -> Unit) {
             toolbar.addView(TextView(this).apply {
@@ -369,7 +373,11 @@ class VideoPlayerActivity : ComponentActivity() {
         root.addView(toolbar)
         gestureLevel = TextView(this).apply {
             setTextColor(Color.WHITE); textSize = 16f; gravity = Gravity.CENTER
-            setBackgroundColor(0xCC172117.toInt()); setPadding(12.dp, 8.dp, 12.dp, 4.dp)
+            background = GradientDrawable().apply {
+                setColor(0xCC172117.toInt())
+                cornerRadius = 12.dp.toFloat()
+            }
+            setPadding(12.dp, 8.dp, 12.dp, 4.dp)
         }
         gestureProgress = android.widget.ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply { max = 100 }
         gestureOverlay = LinearLayout(this).apply {
@@ -386,7 +394,10 @@ class VideoPlayerActivity : ComponentActivity() {
             text = label; textSize = 30f; setTextColor(Color.WHITE)
             contentDescription = description
             this.gravity = Gravity.CENTER
-            setBackgroundColor(0xAA172117.toInt())
+            background = GradientDrawable().apply {
+                setColor(0xAA172117.toInt())
+                cornerRadius = 14.dp.toFloat()
+            }
             setOnClickListener { action() }
             translationX = offset.dp.toFloat()
             videoContainer.addView(this, FrameLayout.LayoutParams(48.dp, 48.dp, Gravity.CENTER))

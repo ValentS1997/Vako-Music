@@ -14,6 +14,7 @@ import androidx.activity.result.IntentSenderRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.background
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.Arrangement
@@ -31,6 +32,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.IconButton
@@ -45,6 +47,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -312,18 +315,28 @@ object VideoModule {
                 .mapNotNull { it.path.removePrefix(folder).substringBefore('/').takeIf(String::isNotEmpty) }.distinct().sorted().toList()
 
         Column(Modifier.fillMaxSize()) {
-            Text("Видео", style = MaterialTheme.typography.titleLarge)
+            VakoSectionHeader("Видео", if (allowed) "${videos.size} файлов" else null) {
+                VideoAction("＋", "Открыть видеофайл", { fileLauncher.launch(arrayOf("video/*")) })
+                if (allowed) VideoAction("⟳", "Обновить видео", { refresh++ })
+            }
             if (!allowed) {
                 Spacer(Modifier.height(8.dp))
                 Text("Разрешите доступ к видео телефона и карты памяти.")
                 Button(onClick = { permissionLauncher.launch(permission) }) { Text("Разрешить доступ к видео") }
             }
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                VideoAction("＋", "Открыть видеофайл", { fileLauncher.launch(arrayOf("video/*")) })
-                if (allowed) VideoAction("⟳", "Обновить видео", { refresh++ })
-            }
             if (allowed && history.isNotEmpty()) {
-                TextButton(onClick = { openRecent(history.first()) }) { Text("▶ Продолжить последнее: ${history.first().title}", maxLines = 1, overflow = TextOverflow.Ellipsis) }
+                val last = history.first()
+                Surface(onClick = { openRecent(last) }, modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                    shape = VakoUi.row, color = MaterialTheme.colorScheme.surfaceVariant) {
+                    Column(Modifier.padding(12.dp)) {
+                        Text("▶ Продолжить просмотр", color = MaterialTheme.colorScheme.primary,
+                            fontWeight = FontWeight.SemiBold)
+                        Text(last.title, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        if (last.positionMs > 0) Text(VideoStore.formatDuration(last.positionMs),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                }
             }
             if (error.isNotBlank()) Text(error, color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.bodySmall)
             failedWrite?.let { (edits, label) ->
@@ -342,9 +355,7 @@ object VideoModule {
             }
             Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                 listOf("Папки", "Все", "Плейлисты", "Недавние", "Избранное", "Закладки").forEachIndexed { index, label ->
-                    TextButton(onClick = { tab = index; selectedUris = emptySet() }) {
-                        Text(label, color = if (tab == index) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
+                    VakoChip(label, tab == index) { tab = index; selectedUris = emptySet() }
                 }
                 Spacer(Modifier.weight(1f))
                 if (tab == 2) TextButton(onClick = { newPlaylistItems = emptyList(); inputKind = "create_playlist"; inputText = "" }) { Text("+") }
@@ -562,7 +573,10 @@ object VideoModule {
     private fun VideoRow(title: String, details: String, onClick: () -> Unit, onLongClick: (() -> Unit)? = null,
                          checked: Boolean = false, menu: List<Pair<String, () -> Unit>> = emptyList()) {
         var open by remember { mutableStateOf(false) }
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+        Row(Modifier.fillMaxWidth().padding(vertical = 3.dp).clip(VakoUi.row)
+            .background(if (checked) MaterialTheme.colorScheme.primaryContainer
+                else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = .55f))
+            .padding(horizontal = 10.dp), horizontalArrangement = Arrangement.SpaceBetween) {
             Column(Modifier.weight(1f).combinedClickable(onClick = onClick, onLongClick = onLongClick ?: { open = true }).padding(vertical = 10.dp)) {
                 Text(if (checked) "✓ $title" else title, maxLines = 1, overflow = TextOverflow.Ellipsis,
                     fontWeight = FontWeight.SemiBold, color = if (checked) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface)
