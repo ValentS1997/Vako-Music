@@ -326,8 +326,10 @@ object VideoModule {
             }
             if (allowed && history.isNotEmpty()) {
                 val last = history.first()
-                Surface(onClick = { openRecent(last) }, modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
-                    shape = VakoUi.row, color = MaterialTheme.colorScheme.surfaceVariant) {
+                Surface(onClick = { openRecent(last) }, modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)
+                    .vakoPanel(active = true, shape = VakoUi.row),
+                    shape = VakoUi.row, color = androidx.compose.ui.graphics.Color.Transparent,
+                    contentColor = MaterialTheme.colorScheme.onSurface) {
                     Column(Modifier.padding(12.dp)) {
                         Text("▶ Продолжить просмотр", color = MaterialTheme.colorScheme.primary,
                             fontWeight = FontWeight.SemiBold)
@@ -573,9 +575,7 @@ object VideoModule {
     private fun VideoRow(title: String, details: String, onClick: () -> Unit, onLongClick: (() -> Unit)? = null,
                          checked: Boolean = false, menu: List<Pair<String, () -> Unit>> = emptyList()) {
         var open by remember { mutableStateOf(false) }
-        Row(Modifier.fillMaxWidth().padding(vertical = 3.dp).clip(VakoUi.row)
-            .background(if (checked) MaterialTheme.colorScheme.primaryContainer
-                else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = .55f))
+        Row(Modifier.fillMaxWidth().padding(vertical = 3.dp).vakoPanel(active = checked, shape = VakoUi.row)
             .padding(horizontal = 10.dp), horizontalArrangement = Arrangement.SpaceBetween) {
             Column(Modifier.weight(1f).combinedClickable(onClick = onClick, onLongClick = onLongClick ?: { open = true }).padding(vertical = 10.dp)) {
                 Text(if (checked) "✓ $title" else title, maxLines = 1, overflow = TextOverflow.Ellipsis,

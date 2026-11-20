@@ -7,7 +7,6 @@ import android.content.pm.ActivityInfo
 import android.content.Context
 import android.content.Intent
 import android.graphics.Color
-import android.graphics.drawable.GradientDrawable
 import android.net.Uri
 import android.os.Bundle
 import android.os.Build
@@ -42,7 +41,6 @@ import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import androidx.media3.common.util.UnstableApi
-import androidx.compose.ui.graphics.toArgb
 
 @androidx.annotation.OptIn(markerClass = [UnstableApi::class])
 class VideoPlayerActivity : ComponentActivity() {
@@ -273,30 +271,19 @@ class VideoPlayerActivity : ComponentActivity() {
             setBackgroundColor(Color.BLACK)
             resizeMode = preferences.getInt("resize_mode", AspectRatioFrameLayout.RESIZE_MODE_FIT)
         }
-        val settings = AppPreferences(this)
-        val accentColor = ThemePalette.resolve(
-            settings.number("theme_base", 2), settings.number("theme_accent", 0),
-            settings.enabled("theme_custom", false),
-            settings.string("theme_background", "#101314"),
-            settings.string("theme_surface", "#1C2021"),
-            settings.string("theme_text", "#F0F3F1"),
-            settings.string("theme_accent_hex", "#8FCF52")
-        ).accent.toArgb()
+        val chrome = VideoChrome(this)
         val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setBackgroundColor(Color.BLACK) }
         toolbar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
             setPadding(8.dp, 0, 8.dp, 0)
-            background = GradientDrawable().apply {
-                setColor(0xCC111711.toInt())
-                cornerRadius = 14.dp.toFloat()
-            }
+            background = chrome.panel(14.dp.toFloat())
         }
         fun button(label: String, action: (View) -> Unit) {
             toolbar.addView(TextView(this).apply {
                 text = label
                 textSize = 24f
-                setTextColor(accentColor)
+                setTextColor(chrome.accent)
                 gravity = Gravity.CENTER
                 setPadding(7.dp, 0, 7.dp, 0)
                 setOnClickListener { action(it) }
@@ -313,7 +300,7 @@ class VideoPlayerActivity : ComponentActivity() {
         button("←") { finish() }
         titleView = TextView(this).apply {
             text = intent.getStringExtra(EXTRA_TITLE) ?: videoTitle(videoUri)
-            setTextColor(Color.WHITE)
+            setTextColor(chrome.text)
             textSize = 14f
             maxLines = 1
             ellipsize = android.text.TextUtils.TruncateAt.END
@@ -372,11 +359,8 @@ class VideoPlayerActivity : ComponentActivity() {
         }
         root.addView(toolbar)
         gestureLevel = TextView(this).apply {
-            setTextColor(Color.WHITE); textSize = 16f; gravity = Gravity.CENTER
-            background = GradientDrawable().apply {
-                setColor(0xCC172117.toInt())
-                cornerRadius = 12.dp.toFloat()
-            }
+            setTextColor(chrome.text); textSize = 16f; gravity = Gravity.CENTER
+            background = chrome.panel(12.dp.toFloat())
             setPadding(12.dp, 8.dp, 12.dp, 4.dp)
         }
         gestureProgress = android.widget.ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply { max = 100 }
@@ -391,13 +375,10 @@ class VideoPlayerActivity : ComponentActivity() {
             addView(gestureOverlay, FrameLayout.LayoutParams(260.dp, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.CENTER))
         }
         fun navigationButton(label: String, description: String, offset: Int, action: () -> Unit): TextView = TextView(this).apply {
-            text = label; textSize = 30f; setTextColor(Color.WHITE)
+            text = label; textSize = 30f; setTextColor(chrome.accent)
             contentDescription = description
             this.gravity = Gravity.CENTER
-            background = GradientDrawable().apply {
-                setColor(0xAA172117.toInt())
-                cornerRadius = 14.dp.toFloat()
-            }
+            background = chrome.panel(14.dp.toFloat(), active = true)
             setOnClickListener { action() }
             translationX = offset.dp.toFloat()
             videoContainer.addView(this, FrameLayout.LayoutParams(48.dp, 48.dp, Gravity.CENTER))
@@ -411,6 +392,7 @@ class VideoPlayerActivity : ComponentActivity() {
         updateNavigationButtons()
         root.addView(videoContainer, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
         setContentView(root)
+        chrome.tintMedia3(playerView, resources.displayMetrics.density)
         playerView.setControllerVisibilityListener(PlayerView.ControllerVisibilityListener { visibility ->
             controlsVisible = visibility == View.VISIBLE
             updateControls()
