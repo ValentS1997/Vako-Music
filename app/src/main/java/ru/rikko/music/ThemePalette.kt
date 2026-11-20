@@ -5,6 +5,8 @@ import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.luminance
+import kotlin.math.max
+import kotlin.math.min
 
 data class ThemeChoice(val name: String, val dark: Color, val light: Color)
 
@@ -57,8 +59,8 @@ object ThemePalette {
         val text = if (custom) parseHex(customText) ?: presetText else presetText
         val accent = if (custom) parseHex(customAccent) ?: presetAccent else presetAccent
         val light = background.luminance() > 0.48f
-        val muted = mix(text, background, if (light) .38f else .40f)
         val variant = mix(surface, text, if (light) .06f else .10f)
+        val muted = readableMuted(text, background, surface, variant, light)
         val accentContainer = mix(background, accent, if (light) .15f else .21f)
         val onAccent = if (accent.luminance() > .18f) Color(0xFF111713) else Color.White
         val outline = mix(text, background, .58f)
@@ -91,5 +93,29 @@ object ThemePalette {
             first.green * a + second.green * secondFraction,
             first.blue * a + second.blue * secondFraction,
         )
+    }
+
+    private fun readableMuted(text: Color, background: Color, surface: Color,
+                             variant: Color, light: Boolean): Color {
+        val preferred = if (light) .38f else .40f
+        fun readable(fraction: Float): Boolean {
+            val candidate = mix(text, background, fraction)
+            return contrast(candidate, surface) >= 4.5f && contrast(candidate, variant) >= 4.5f
+        }
+        if (readable(preferred)) return mix(text, background, preferred)
+        if (!readable(0f)) return text // A custom text color may itself lack contrast.
+        var low = 0f
+        var high = preferred
+        repeat(12) {
+            val middle = (low + high) / 2f
+            if (readable(middle)) low = middle else high = middle
+        }
+        return mix(text, background, low)
+    }
+
+    private fun contrast(first: Color, second: Color): Float {
+        val a = first.luminance()
+        val b = second.luminance()
+        return (max(a, b) + .05f) / (min(a, b) + .05f)
     }
 }
