@@ -2017,7 +2017,7 @@ class MainActivity : ComponentActivity() {
     @Composable
     private fun LibraryScreen() {
         var sortMenuOpen by remember { mutableStateOf(false) }
-        VakoSectionHeader("Медиатека", "${localSongs.size} файлов") {
+        VakoSectionHeader("Медиатека", if (scanning) "Сканирование…" else "${localSongs.size} файлов") {
             ActionIcon("☷", "Очередь воспроизведения", { showQueue = true; showSound = false })
             if (libraryView == 0 || libraryView == 2) {
                 ActionIcon("⇅", "Сортировка медиатеки", { sortMenuOpen = true })
@@ -2140,7 +2140,9 @@ class MainActivity : ComponentActivity() {
             })
         }
         if (filtered.isEmpty()) {
-            Text("Аудиофайлов пока нет. Нажмите «Разрешить доступ» или «Добавить файл».", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(if (scanning) "Сканирование медиатеки…" else
+                "Аудиофайлов пока нет. Нажмите «Разрешить доступ» или «Добавить файл».",
+                color = MaterialTheme.colorScheme.onSurfaceVariant)
         } else {
             LazyColumn(verticalArrangement = Arrangement.spacedBy(VakoUi.rowGap)) {
                 items(filtered, key = { it.uri.toString() }) { song -> LocalSongRow(song, source = filtered) }
