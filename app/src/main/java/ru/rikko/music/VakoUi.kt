@@ -19,6 +19,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
@@ -64,7 +65,8 @@ fun VakoSearchField(value: String, onValueChange: (String) -> Unit, label: Strin
         label = { Text(label) },
         leadingIcon = { Text("⌕", color = MaterialTheme.colorScheme.onSurfaceVariant) },
         trailingIcon = if (value.isBlank()) null else ({
-            IconButton(onClick = { onValueChange("") }) { Text("×") }
+            IconButton(onClick = { onValueChange("") },
+                modifier = Modifier.semantics { contentDescription = "Очистить поиск" }) { Text("×") }
         }),
         singleLine = true,
         shape = VakoUi.panel,

@@ -92,6 +92,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.geometry.Offset
@@ -1371,6 +1373,9 @@ class MainActivity : ComponentActivity() {
                         modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp)) {
                         if (navigationVisible) {
                             val labels = mapOf(0 to "Медиатека", 1 to "Яндекс", 2 to "Видео", 3 to "Настройки")
+                            val shortLabels = mapOf(0 to "Медиа", 1 to "Яндекс", 2 to "Видео", 3 to "Настр.")
+                            val useShortLabels = LocalDensity.current.fontScale >= 1.25f ||
+                                LocalConfiguration.current.screenWidthDp < 390
                             val visible = moduleOrder.filter { it == 0 || it == 3 ||
                                 (it == 1 && yandexEnabled) || (it == 2 && videoEnabled) }
                             Row(Modifier.fillMaxWidth().height(52.dp), verticalAlignment = Alignment.CenterVertically,
@@ -1429,7 +1434,8 @@ class MainActivity : ComponentActivity() {
                                                 }
                                             }
                                         }.clickable(onClick = openModule), contentAlignment = Alignment.Center) {
-                                        Text(labels[index].orEmpty(), maxLines = 1, overflow = TextOverflow.Ellipsis,
+                                        Text((if (useShortLabels) shortLabels else labels)[index].orEmpty(),
+                                            maxLines = 1, overflow = TextOverflow.Ellipsis,
                                             color = if (activeTab == index || draggedModule == index) MaterialTheme.colorScheme.primary
                                                 else MaterialTheme.colorScheme.onSurfaceVariant,
                                             fontWeight = if (activeTab == index) FontWeight.Bold else FontWeight.Normal)
@@ -1825,7 +1831,7 @@ class MainActivity : ComponentActivity() {
             }
             StatusLine()
             LazyColumn { items(autoCollections, key = { it.name }) { collection ->
-                Row(Modifier.fillMaxWidth().padding(vertical = 3.dp).height(60.dp)
+                Row(Modifier.fillMaxWidth().padding(vertical = 3.dp).heightIn(min = 60.dp)
                     .clip(VakoUi.row).background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = .55f))
                     .clickable {
                     selectedAutoCollection = collection
@@ -1897,9 +1903,9 @@ class MainActivity : ComponentActivity() {
             StatusLine()
             LazyColumn(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 item(key = "liked") {
-                    Row(Modifier.fillMaxWidth().height(56.dp).clip(VakoUi.row)
+                    Row(Modifier.fillMaxWidth().heightIn(min = 56.dp).clip(VakoUi.row)
                         .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = .55f))
-                        .clickable { openLikedTracks() }.padding(horizontal = 10.dp),
+                        .clickable { openLikedTracks() }.padding(horizontal = 10.dp, vertical = 6.dp),
                         verticalAlignment = Alignment.CenterVertically) {
                         Text("♥", color = MaterialTheme.colorScheme.primary)
                         Spacer(Modifier.width(12.dp))
@@ -1912,9 +1918,10 @@ class MainActivity : ComponentActivity() {
                     }
                 }
                 items(ownPlaylists, key = { it.kind }) { listItem ->
-                    Row(Modifier.fillMaxWidth().padding(vertical = 2.dp).height(56.dp)
+                    Row(Modifier.fillMaxWidth().padding(vertical = 2.dp).heightIn(min = 56.dp)
                         .clip(VakoUi.row).background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = .55f))
-                        .clickable { openOwnPlaylist(listItem) }.padding(horizontal = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+                        .clickable { openOwnPlaylist(listItem) }.padding(horizontal = 10.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically) {
                         Column(Modifier.weight(1f)) {
                             Text(listItem.title, maxLines = 1, overflow = TextOverflow.Ellipsis, fontWeight = FontWeight.SemiBold)
                             Text(trackCountLabel(listItem.count), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -2279,7 +2286,7 @@ class MainActivity : ComponentActivity() {
                 items(childFolders, key = { "folder:${it.key}" }) { child ->
                     var folderMenuOpen by remember(child.key) { mutableStateOf(false) }
                     Row(
-                        Modifier.fillMaxWidth().height(56.dp).clip(VakoUi.row)
+                        Modifier.fillMaxWidth().heightIn(min = 56.dp).clip(VakoUi.row)
                             .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = .55f))
                             .padding(start = 10.dp),
                         verticalAlignment = Alignment.CenterVertically
@@ -2421,7 +2428,7 @@ class MainActivity : ComponentActivity() {
 
     @Composable
     private fun BrowseGroupRow(group: BrowseGroup, open: () -> Unit) {
-        Row(Modifier.fillMaxWidth().height(58.dp).clip(VakoUi.row)
+        Row(Modifier.fillMaxWidth().heightIn(min = 58.dp).clip(VakoUi.row)
             .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = .55f))
             .clickable(onClick = open).padding(horizontal = 10.dp), verticalAlignment = Alignment.CenterVertically) {
             Text("♫", color = MaterialTheme.colorScheme.primary)
@@ -2466,14 +2473,14 @@ class MainActivity : ComponentActivity() {
         var menuOpen by remember(song.uri.toString()) { mutableStateOf(false) }
         val selected = song.uri.toString() in selectedLocalUris
         Column(Modifier.padding(vertical = 2.dp)) {
-            Row(Modifier.fillMaxWidth().height(if (compactRows) 56.dp else 72.dp)
+            Row(Modifier.fillMaxWidth().heightIn(min = if (compactRows) 56.dp else 72.dp)
                 .clip(VakoUi.row)
                 .background(if (selected) MaterialTheme.colorScheme.primaryContainer
                     else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = .45f))
                 .combinedClickable(
                 onClick = { if (selectedLocalUris.isNotEmpty()) toggleLocalSelection(song) else tapLocal(song, source) },
                 onLongClick = { toggleLocalSelection(song) }
-            ).padding(start = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+            ).padding(start = 10.dp, top = 4.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
                 if (selectedLocalUris.isNotEmpty()) Checkbox(checked = selected, onCheckedChange = { toggleLocalSelection(song) })
                 else Text(if (song.uri.toString() in favoriteUris) "♥" else "♫", color = MaterialTheme.colorScheme.primary)
                 Spacer(Modifier.width(12.dp))
@@ -2957,7 +2964,8 @@ class MainActivity : ComponentActivity() {
         val listState = rememberLazyListState()
         var draggingIndex by remember { mutableStateOf(-1) }
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            TextButton(onClick = { showQueue = false }) { Text("←") }
+            TextButton(onClick = { showQueue = false },
+                modifier = Modifier.semantics { contentDescription = "Вернуться из очереди" }) { Text("←") }
             Text("Очередь · ${queue.size}", modifier = Modifier.weight(1f), fontWeight = FontWeight.SemiBold)
             TextButton(onClick = { showClearQueue = true }, enabled = queue.isNotEmpty()) {
                 Text("Очистить", color = MaterialTheme.colorScheme.error)
@@ -2973,7 +2981,7 @@ class MainActivity : ComponentActivity() {
         if (queue.isEmpty()) Text("Очередь пуста", color = MaterialTheme.colorScheme.onSurfaceVariant)
         LazyColumn(state = listState, verticalArrangement = Arrangement.spacedBy(4.dp)) {
             itemsIndexed(queue, key = { index, _ -> index }) { index, item ->
-                Row(Modifier.fillMaxWidth().height(64.dp).clip(VakoUi.row)
+                Row(Modifier.fillMaxWidth().heightIn(min = 64.dp).clip(VakoUi.row)
                     .background(if (index == queueIndex || index == draggingIndex) MaterialTheme.colorScheme.primaryContainer
                         else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = .45f))
                     .padding(start = 6.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -3022,8 +3030,14 @@ class MainActivity : ComponentActivity() {
                     }
                     if (item is QueueItem.Local && item.song.durationMs > 0) Text(LibraryBrowse.duration(item.song.durationMs),
                         style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    TextButton(onClick = { moveQueueItem(index, -1) }, enabled = index > 0) { Text("↑") }
-                    TextButton(onClick = { moveQueueItem(index, 1) }, enabled = index < queue.lastIndex) { Text("↓") }
+                    TextButton(onClick = { moveQueueItem(index, -1) }, enabled = index > 0,
+                        modifier = Modifier.semantics { contentDescription = "Поднять трек ${index + 1} в очереди" }) {
+                        Text("↑")
+                    }
+                    TextButton(onClick = { moveQueueItem(index, 1) }, enabled = index < queue.lastIndex,
+                        modifier = Modifier.semantics { contentDescription = "Опустить трек ${index + 1} в очереди" }) {
+                        Text("↓")
+                    }
                     TextButton(onClick = { removeQueueItem(index) }, enabled = index != queueIndex,
                         modifier = Modifier.semantics { contentDescription = "Удалить трек ${index + 1} из очереди" }) {
                         Text("×", color = if (index != queueIndex) MaterialTheme.colorScheme.error
@@ -3115,14 +3129,14 @@ class MainActivity : ComponentActivity() {
         var menuOpen by remember(track.trackId) { mutableStateOf(false) }
         val selected = selectedRemoteTracks.any { trackKey(it) == trackKey(track) }
         Column(Modifier.padding(vertical = 2.dp)) {
-            Row(Modifier.fillMaxWidth().height(if (compactRows) 58.dp else 74.dp)
+            Row(Modifier.fillMaxWidth().heightIn(min = if (compactRows) 58.dp else 74.dp)
                 .clip(VakoUi.row)
                 .background(if (selected) MaterialTheme.colorScheme.primaryContainer
                     else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = .45f))
                 .combinedClickable(
                 onClick = { if (selectedRemoteTracks.isNotEmpty()) toggleRemoteSelection(track) else tapRemote(track, source) },
                 onLongClick = { toggleRemoteSelection(track) }
-            ).padding(start = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+            ).padding(start = 10.dp, top = 4.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
                 if (selectedRemoteTracks.isNotEmpty()) Checkbox(checked = selected, onCheckedChange = { toggleRemoteSelection(track) })
                 Column(Modifier.weight(1f)) {
                     Text(track.title.ifBlank { "Без названия" }, maxLines = 1, overflow = TextOverflow.Ellipsis, fontWeight = FontWeight.SemiBold)
