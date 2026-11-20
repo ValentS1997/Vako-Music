@@ -11,8 +11,8 @@ android {
         minSdk = 29
         targetSdk = 34
         // Keep a monotonically increasing code so existing test installations can upgrade.
-        versionCode = 19
-        versionName = "0.0.1"
+        versionCode = 20
+        versionName = "0.0.2"
     }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
