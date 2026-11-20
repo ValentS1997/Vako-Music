@@ -109,6 +109,12 @@ object MusicRepository {
         Http.postString("$API/users/${item.owner}/playlists/${item.kind}/name", "value=$value", token)
     }
 
+    fun deletePlaylist(item: UserPlaylist, token: String) {
+        val uid = ownUid(token)
+        require(item.owner == uid) { "Можно удалить только свой плейлист" }
+        Http.postString("$API/users/$uid/playlists/${item.kind}/delete", "", token)
+    }
+
     fun removePlaylistTrack(item: UserPlaylist, position: Int, token: String) {
         val current = result(Http.getString("$API/users/${item.owner}/playlists/${item.kind}", token))
         val revision = current.optInt("revision", -1)

@@ -41,7 +41,7 @@ internal class VideoChrome(context: Context) {
     }
 
     /** Image tint is held by ImageButton when Media3 changes play/pause drawables. */
-    fun tintMedia3(root: View, density: Float) {
+    fun tintMedia3(root: View) {
         fun visit(view: View) {
             when (view) {
                 is ImageButton -> view.imageTintList = ColorStateList.valueOf(accent)
@@ -61,8 +61,8 @@ internal class VideoChrome(context: Context) {
                 setTextColor(accent)
             }
         }
-        root.findViewById<View>(androidx.media3.ui.R.id.exo_bottom_bar)?.background = panel(14f * density, 220)
-        root.findViewById<View>(androidx.media3.ui.R.id.exo_center_controls)?.background = panel(18f * density, 215, true)
+        root.findViewById<View>(androidx.media3.ui.R.id.exo_bottom_bar)?.background = null
+        root.findViewById<View>(androidx.media3.ui.R.id.exo_center_controls)?.background = null
         root.findViewById<DefaultTimeBar>(androidx.media3.ui.R.id.exo_progress)?.apply {
             setPlayedColor(accent)
             setScrubberColor(accent)

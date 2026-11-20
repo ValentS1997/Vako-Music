@@ -36,13 +36,14 @@ class Downloader(private val context: Context) {
         quality: Quality,
         wantNativeFlac: Boolean,
         wantLyrics: Boolean,
+        playlistFolder: String? = null,
         onBytes: ((Long, Long) -> Unit)? = null,
     ): Result {
         val source = YandexMusic.getAudioSource(track, quality, token)
         if (wantLyrics && track.lyrics.isBlank()) {
             track.lyrics = YandexMusic.fetchLyrics(track.trackId, token)
         }
-        return save(source, track, wantNativeFlac, onBytes)
+        return save(source, track, wantNativeFlac, onBytes, playlistFolder)
     }
 
     /** Скачивание и обработка через временный файл без полной копии трека в heap. */
@@ -51,6 +52,7 @@ class Downloader(private val context: Context) {
         track: Track,
         wantNativeFlac: Boolean,
         onBytes: ((Long, Long) -> Unit)? = null,
+        playlistFolder: String? = null,
     ): Result {
         val temporary = File.createTempFile("vako-audio-", ".part", context.cacheDir)
         try {
@@ -68,25 +70,25 @@ class Downloader(private val context: Context) {
             val name = track.baseName()
             return when {
                 FlacRemux.isNativeFlac(header) ->
-                    saveToMusic("$name.flac", "audio/flac") { out -> temporary.inputStream().use { it.copyTo(out) } }
+                    saveToMusic("$name.flac", "audio/flac", playlistFolder) { out -> temporary.inputStream().use { it.copyTo(out) } }
                 FlacRemux.isMp4(header) -> {
                     val plan = if (wantNativeFlac) {
                         try { FlacRemux.plan(temporary) } catch (_: FlacRemux.NotFlacMp4) { null }
                     } else null
                     if (plan != null)
-                        saveToMusic("$name.flac", "audio/flac") {
+                        saveToMusic("$name.flac", "audio/flac", playlistFolder) {
                             FlacRemux.write(temporary, plan, track, cover, it)
                         }
                     else {
                         if (source.codec.equals("flac", ignoreCase = true))
                             throw Exception("Полученный FLAC в MP4 повреждён или не поддерживается")
-                        saveToMusic("$name.m4a", "audio/mp4") { out ->
+                        saveToMusic("$name.m4a", "audio/mp4", playlistFolder) { out ->
                             temporary.inputStream().use { it.copyTo(out) }
                         }
                     }
                 }
                 isMp3(header) ->
-                    saveToMusic("$name.mp3", "audio/mpeg") {
+                    saveToMusic("$name.mp3", "audio/mpeg", playlistFolder) {
                         Id3.writeTagged(temporary, track, cover, it)
                     }
                 else -> throw Exception("Получен неподдерживаемый аудиоформат")
@@ -104,9 +106,11 @@ class Downloader(private val context: Context) {
             (bytes[1].toInt() and 0xe0) == 0xe0
     }
 
-    /** Сохранение в общую папку «Музыка/MusicDownloader». */
-    private fun saveToMusic(fileName: String, mime: String, write: (OutputStream) -> Unit): Result {
-        val subDir = "MusicDownloader"
+    /** Playlist title stays within MusicDownloader even if it contains path separators. */
+    private fun saveToMusic(fileName: String, mime: String, playlistFolder: String?, write: (OutputStream) -> Unit): Result {
+        val folder = playlistFolder?.map { if (it == '/' || it == '\\' || it.isISOControl()) '_' else it }
+            ?.joinToString("")?.trim()?.trim('.')?.take(80).orEmpty()
+        val subDir = if (playlistFolder == null) "MusicDownloader" else "MusicDownloader/${folder.ifBlank { "Плейлист" }}"
         var savedUri: Uri? = null
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
@@ -143,7 +147,7 @@ class Downloader(private val context: Context) {
                 Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MUSIC),
                 subDir
             )
-            if (!dir.exists()) dir.mkdirs()
+            if (!dir.exists() && !dir.mkdirs()) throw Exception("Не удалось создать папку загрузки")
             val file = File(dir, fileName)
             try {
                 BufferedOutputStream(file.outputStream(), 256 * 1024).use(write)

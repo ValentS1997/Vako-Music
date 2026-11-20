@@ -1,4 +1,4 @@
-# Архитектура Vako Music 0.0.1
+# Архитектура Vako Player 0.0.1
 
 Одномодульное Android-приложение на Kotlin и Jetpack Compose. Минимальная версия Android — API 29, целевая и версия компиляции — API 34. Для видео используется Media3 ExoPlayer; аудио воспроизводится через Android `MediaPlayer` в фоновом `PlaybackService` с `MediaSession`.
 
@@ -18,7 +18,7 @@
 | `TokenStore.kt` | Шифрование OAuth-токена ключом Android Keystore. |
 | `ThemePalette.kt`, `AppPreferences.kt`, `SavedQueueStore.kt` | Тема, настройки модулей и сохранение очереди. |
 
-Пакет приложения `ru.rikko.music` сохранён для совместимости с внутренними установками; отображаемое название — Vako Music.
+Пакет приложения `ru.rikko.music` сохранён для совместимости с внутренними установками; отображаемое название — Vako Player.
 
 ## Данные и разрешения
 
