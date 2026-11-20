@@ -72,6 +72,7 @@ import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.Slider
+import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
@@ -3170,6 +3171,7 @@ class MainActivity : ComponentActivity() {
 
     @Composable
     private fun PlayerBar() {
+        var pendingSeek by remember(queueIndex, currentTitle) { mutableStateOf<Float?>(null) }
         Surface(color = MaterialTheme.colorScheme.surfaceVariant) {
             Column {
             Row(Modifier.fillMaxWidth().height(66.dp).clickable { showNowPlaying = true }.padding(horizontal = 6.dp),
@@ -3190,9 +3192,23 @@ class MainActivity : ComponentActivity() {
                         enabled = prepared || queue.isNotEmpty(), selected = true)
                     ActionIcon("⏭", "Следующий трек", { nextTrack() })
             }
-            if (durationMs > 0) LinearProgressIndicator(
-                progress = { (currentPositionMs.toFloat() / durationMs).coerceIn(0f, 1f) },
-                modifier = Modifier.fillMaxWidth().height(3.dp),
+            if (durationMs > 0) Slider(
+                value = pendingSeek ?: (currentPositionMs.toFloat() / durationMs).coerceIn(0f, 1f),
+                onValueChange = { pendingSeek = it },
+                onValueChangeFinished = {
+                    pendingSeek?.let { fraction ->
+                        val position = (fraction * durationMs).toInt().coerceIn(0, durationMs)
+                        currentPositionMs = position
+                        playbackService?.seekTo(position)
+                    }
+                    pendingSeek = null
+                },
+                enabled = prepared,
+                colors = SliderDefaults.colors(
+                    activeTrackColor = MaterialTheme.colorScheme.primary,
+                    inactiveTrackColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                ),
+                modifier = Modifier.fillMaxWidth().height(40.dp).padding(horizontal = 8.dp),
             )
             }
         }
