@@ -10,7 +10,6 @@ import android.graphics.Color
 import android.net.Uri
 import android.os.Bundle
 import android.os.Build
-import android.media.MediaMetadataRetriever
 import android.provider.OpenableColumns
 import android.os.SystemClock
 import android.view.GestureDetector
@@ -77,7 +76,14 @@ class VideoPlayerActivity : ComponentActivity() {
     private var seekWasPlaying = false
     private var lastSeekApplied = -1L
     private var lastSeekAt = 0L
-    private var frameDurationMs = 33L
+    private val seekHandler = Handler(Looper.getMainLooper())
+    private val applySeekPreview = Runnable {
+        if (gestureMode == 3 && seekPreview != lastSeekApplied && ::player.isInitialized) {
+            player.seekTo(seekPreview)
+            lastSeekApplied = seekPreview
+            lastSeekAt = SystemClock.uptimeMillis()
+        }
+    }
     private var zoom = 1f
     private var panX = 0f
     private var panY = 0f
@@ -189,29 +195,35 @@ class VideoPlayerActivity : ComponentActivity() {
                 val height = playerView.height.toFloat().coerceAtLeast(1f)
                 if (e1.y < height * 0.15f || e1.y > height * 0.85f) return false
                 if (gestureMode == 0) {
-                    gestureMode = if (kotlin.math.abs(e2.x - e1.x) > kotlin.math.abs(e2.y - e1.y) * 1.2f) 3
+                    val horizontal = kotlin.math.abs(e2.x - e1.x) > kotlin.math.abs(e2.y - e1.y) * 1.2f
+                    if (horizontal && player.duration <= 0L) return false
+                    gestureMode = if (horizontal) 3
                         else if (e1.x < playerView.width / 2f) 1 else 2
                     seekStart = player.currentPosition
                     seekPreview = seekStart
                     if (gestureMode == 3) {
                         seekWasPlaying = player.isPlaying
                         player.pause()
+                        player.setSeekParameters(SeekParameters.CLOSEST_SYNC)
                         lastSeekApplied = -1L
+                        lastSeekAt = 0L
                     }
                 }
                 if (gestureMode == 3) {
                     val duration = player.duration.takeIf { it > 0 } ?: return false
-                    val pixelsPerFrame = 4f * resources.displayMetrics.density
-                    val frameDelta = ((e2.x - e1.x) / pixelsPerFrame).toLong()
-                    val snapped = (seekStart + frameDelta * frameDurationMs).coerceIn(0, duration)
+                    val snapped = VideoSeekSteps.candidate(seekStart, e2.x - e1.x,
+                        resources.displayMetrics.density, duration)
                     seekPreview = snapped
                     val now = SystemClock.uptimeMillis()
-                    if (snapped != lastSeekApplied && now - lastSeekAt >= 35) {
-                        player.seekTo(snapped)
-                        lastSeekApplied = snapped
-                        lastSeekAt = now
+                    if (snapped != lastSeekApplied) {
+                        seekHandler.removeCallbacks(applySeekPreview)
+                        val wait = (150L - (now - lastSeekAt)).coerceAtLeast(0L)
+                        if (wait == 0L) applySeekPreview.run()
+                        else seekHandler.postDelayed(applySeekPreview, wait)
                     }
-                    showLevel("${VideoStore.formatDuration(snapped)} / ${VideoStore.formatDuration(duration)} · кадр ≈${snapped / frameDurationMs}",
+                    val delta = (snapped - seekStart) / 1_000
+                    val sign = if (delta >= 0) "+" else "−"
+                    showLevel("${VideoStore.formatDuration(snapped)} / ${VideoStore.formatDuration(duration)} · $sign${kotlin.math.abs(delta)} с",
                         (snapped * 100 / duration).toInt())
                 } else if (gestureMode == 1) {
                     val attributes = window.attributes
@@ -230,6 +242,7 @@ class VideoPlayerActivity : ComponentActivity() {
             override fun dispatchTouchEvent(event: MotionEvent): Boolean {
                 if (event.pointerCount > 1 || event.actionMasked == MotionEvent.ACTION_POINTER_DOWN) {
                     pinchActive = true
+                    finishSeekPreview(commit = false)
                     gestureMode = 0
                     gestureOverlay.visibility = View.GONE
                     val x = (0 until event.pointerCount).sumOf { event.getX(it).toDouble() }.toFloat() / event.pointerCount
@@ -246,11 +259,7 @@ class VideoPlayerActivity : ComponentActivity() {
                     this@VideoPlayerActivity.player.setPlaybackSpeed(selectedSpeed)
                 }
                 if (event.actionMasked == MotionEvent.ACTION_UP || event.actionMasked == MotionEvent.ACTION_CANCEL) {
-                    if (gestureMode == 3 && event.actionMasked == MotionEvent.ACTION_UP) {
-                        this@VideoPlayerActivity.player.seekTo(seekPreview)
-                        if (seekWasPlaying) this@VideoPlayerActivity.player.play()
-                    }
-                    seekWasPlaying = false
+                    finishSeekPreview(commit = event.actionMasked == MotionEvent.ACTION_UP)
                     val consumed = gestureMode != 0 || pinchActive
                     gestureMode = 0; pinchActive = false; gestureOverlay.visibility = View.GONE
                     if (consumed) { scheduleControlsHide(); return true }
@@ -415,7 +424,6 @@ class VideoPlayerActivity : ComponentActivity() {
 
     private fun prepare(position: Long) {
         history.record(videoUri.toString(), titleView.text.toString(), position)
-        frameDurationMs = estimateFrameDuration(videoUri)
         val builder = MediaItem.Builder().setUri(videoUri)
         subtitleUri?.let { uri ->
             val mime = if (uri.toString().substringBefore('?').endsWith(".vtt", true)) MimeTypes.TEXT_VTT else MimeTypes.APPLICATION_SUBRIP
@@ -428,6 +436,7 @@ class VideoPlayerActivity : ComponentActivity() {
     }
 
     private fun switchVideo(index: Int) {
+        finishSeekPreview(commit = false)
         savePosition()
         playlistIndex = index
         videoUri = Uri.parse(playlistItems[index])
@@ -518,6 +527,16 @@ class VideoPlayerActivity : ComponentActivity() {
         gestureOverlay.visibility = View.VISIBLE
     }
 
+    private fun finishSeekPreview(commit: Boolean) {
+        if (gestureMode != 3 || !::player.isInitialized) return
+        seekHandler.removeCallbacks(applySeekPreview)
+        player.setSeekParameters(SeekParameters.EXACT)
+        player.seekTo(if (commit) seekPreview else seekStart)
+        if (seekWasPlaying) player.play() else player.pause()
+        seekWasPlaying = false
+        lastSeekApplied = -1L
+    }
+
     private fun applyZoom() {
         if (!::playerView.isInitialized) return
         val surface = playerView.videoSurfaceView ?: return
@@ -529,21 +548,13 @@ class VideoPlayerActivity : ComponentActivity() {
         surface.translationX = panX; surface.translationY = panY
     }
 
-    private fun estimateFrameDuration(uri: Uri): Long = runCatching {
-        MediaMetadataRetriever().use { retriever ->
-            retriever.setDataSource(this, uri)
-            val frames = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_FRAME_COUNT)?.toLongOrNull() ?: 0L
-            val duration = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0L
-            if (frames > 0 && duration > 0) (duration / frames).coerceIn(10, 100) else 33L
-        }
-    }.getOrDefault(33L)
-
     private fun popup(entries: List<String>, action: (Int) -> Unit) {
         android.app.AlertDialog.Builder(this).setTitle("Действия с видео")
             .setItems(entries.toTypedArray()) { _, index -> action(index) }.show()
     }
 
     override fun onPause() {
+        finishSeekPreview(commit = false)
         savePosition()
         preferences.edit().putFloat("app_volume", player.volume).apply()
         if (isFinishing) player.pause()
@@ -566,6 +577,10 @@ class VideoPlayerActivity : ComponentActivity() {
 
     override fun onPictureInPictureModeChanged(isInPictureInPictureMode: Boolean, newConfig: android.content.res.Configuration) {
         super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
+        if (isInPictureInPictureMode) {
+            finishSeekPreview(commit = false)
+            gestureMode = 0
+        }
         enteringPip = false
         inPip = isInPictureInPictureMode
         playerView.useController = !isInPictureInPictureMode
@@ -590,6 +605,7 @@ class VideoPlayerActivity : ComponentActivity() {
     }
 
     override fun onDestroy() {
+        seekHandler.removeCallbacks(applySeekPreview)
         savePosition()
         controlsHandler.removeCallbacks(hideControls)
         if (activePlayer?.get() === this) activePlayer = null
