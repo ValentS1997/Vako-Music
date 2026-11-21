@@ -6,12 +6,14 @@ import org.junit.Test
 import java.net.ServerSocket
 import java.util.concurrent.atomic.AtomicReference
 import java.io.File
+import java.net.HttpURLConnection
+import java.net.URL
 
 class HttpTest {
     private fun respond(
         headers: String,
         body: ByteArray,
-        requests: Int = 2,
+        requests: Int = 1,
         status: String = "200 OK",
         test: (String) -> Unit,
     ) {
@@ -33,7 +35,10 @@ class HttpTest {
                 } catch (e: Throwable) { error.set(e) }
             }
             worker.start()
-            test("http://127.0.0.1:${server.localPort}/audio")
+            val local = URL("http://127.0.0.1:${server.localPort}/audio")
+            Http.connectionFactory = { local.openConnection() as HttpURLConnection }
+            try { test("https://example.test/audio") }
+            finally { Http.connectionFactory = { it.openConnection() as HttpURLConnection } }
             worker.join(3000)
             error.get()?.let { throw AssertionError(it) }
         }
