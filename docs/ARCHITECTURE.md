@@ -1,4 +1,4 @@
-# Архитектура Vako Player 0.0.2
+# Архитектура Vako Player 0.0.3
 
 Одномодульное Android-приложение на Kotlin и Jetpack Compose. Минимальная версия Android — API 29, целевая и версия компиляции — API 34. Для видео используется Media3 ExoPlayer; аудио воспроизводится через Android `MediaPlayer` в фоновом `PlaybackService` с `MediaSession`.
 
