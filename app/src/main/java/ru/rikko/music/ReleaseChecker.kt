@@ -8,14 +8,15 @@ data class VakoRelease(val version: String, val pageUrl: String)
 
 /** GitHub's latest published stable release; no APK is installed automatically. */
 object ReleaseChecker {
-    private const val ENDPOINT = "https://api.github.com/repos/ValentS1997/Vako-Music/releases/latest"
+    private const val ENDPOINT = "https://api.github.com/repos/ValentS1997/Vako-Player/releases/latest"
+    private const val RELEASE_PAGE = "https://github.com/ValentS1997/Vako-Player/releases/tag/"
 
     fun latest(): VakoRelease? {
         val connection = URL(ENDPOINT).openConnection() as HttpURLConnection
         connection.connectTimeout = 10_000
         connection.readTimeout = 10_000
         connection.setRequestProperty("Accept", "application/vnd.github+json")
-        connection.setRequestProperty("User-Agent", "Vako-Music-Android")
+        connection.setRequestProperty("User-Agent", "Vako-Player-Android")
         try {
             if (connection.responseCode == 404) return null
             if (connection.responseCode != 200) error("GitHub: HTTP ${connection.responseCode}")
@@ -30,12 +31,15 @@ object ReleaseChecker {
                 }
                 text.toString()
             }
-            val data = JSONObject(body)
-            val version = data.getString("tag_name")
-            val pageUrl = data.getString("html_url")
-            require(pageUrl.startsWith("https://github.com/ValentS1997/Vako-Music/releases/"))
-            return VakoRelease(version, pageUrl)
+            return parseLatest(body)
         } finally { connection.disconnect() }
+    }
+
+    internal fun parseLatest(body: String): VakoRelease {
+        val data = JSONObject(body)
+        val pageUrl = data.getString("html_url")
+        require(pageUrl.startsWith(RELEASE_PAGE)) { "Некорректная ссылка на релиз" }
+        return VakoRelease(data.getString("tag_name"), pageUrl)
     }
 
     fun isNewer(latest: String, current: String): Boolean {

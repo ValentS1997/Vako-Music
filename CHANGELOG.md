@@ -1,14 +1,20 @@
 # История выпусков
 
+## 0.0.3 — проверка обновлений после переименования репозитория
+
+- Кнопка «Проверить обновление» запрашивает релизы из `ValentS1997/Vako-Player` и принимает новую ссылку GitHub на выпуск.
+- Обновлены адреса репозитория в README, журнале изменений и документации безопасности.
+- Версия Android повышена до `0.0.3` (`versionCode` 21), чтобы исправление устанавливалось поверх 0.0.2.
+
 ## 0.0.2 — Vako Player
 
 ### Исправления по аудиту
 
-- [#2](https://github.com/ValentS1997/Vako-Music/issues/2), [#3](https://github.com/ValentS1997/Vako-Music/issues/3), [#6](https://github.com/ValentS1997/Vako-Music/issues/6): проверка границ FLAC/MP4, лимиты сетевой загрузки и памяти, потоковая обработка файлов и удаление незавершённых записей MediaStore.
-- [#4](https://github.com/ValentS1997/Vako-Music/issues/4), [#5](https://github.com/ValentS1997/Vako-Music/issues/5), [#8](https://github.com/ValentS1997/Vako-Music/issues/8): отдельные команды Play/Pause, управление Android Audio Focus и таймер сна в сервисе воспроизведения.
-- [#7](https://github.com/ValentS1997/Vako-Music/issues/7), [#9](https://github.com/ValentS1997/Vako-Music/issues/9), [#10](https://github.com/ValentS1997/Vako-Music/issues/10): отчёт о частично выполненных файловых операциях, ограничение фоновых задач, unit-тесты и запуск тестов в CI.
+- [#2](https://github.com/ValentS1997/Vako-Player/issues/2), [#3](https://github.com/ValentS1997/Vako-Player/issues/3), [#6](https://github.com/ValentS1997/Vako-Player/issues/6): проверка границ FLAC/MP4, лимиты сетевой загрузки и памяти, потоковая обработка файлов и удаление незавершённых записей MediaStore.
+- [#4](https://github.com/ValentS1997/Vako-Player/issues/4), [#5](https://github.com/ValentS1997/Vako-Player/issues/5), [#8](https://github.com/ValentS1997/Vako-Player/issues/8): отдельные команды Play/Pause, управление Android Audio Focus и таймер сна в сервисе воспроизведения.
+- [#7](https://github.com/ValentS1997/Vako-Player/issues/7), [#9](https://github.com/ValentS1997/Vako-Player/issues/9), [#10](https://github.com/ValentS1997/Vako-Player/issues/10): отчёт о частично выполненных файловых операциях, ограничение фоновых задач, unit-тесты и запуск тестов в CI.
 
-Эти изменения устраняют выявленные причины в коде. Полные критерии ряда issue включают проверки на других версиях Android, внешних SD-картах, Bluetooth и реальных повреждённых файлах; до их завершения issue остаются открытыми. Декомпозиция `MainActivity` ([#11](https://github.com/ValentS1997/Vako-Music/issues/11)) остаётся в плане.
+Эти изменения устраняют выявленные причины в коде. Полные критерии ряда issue включают проверки на других версиях Android, внешних SD-картах, Bluetooth и реальных повреждённых файлах; до их завершения issue остаются открытыми. Декомпозиция `MainActivity` ([#11](https://github.com/ValentS1997/Vako-Player/issues/11)) остаётся в плане.
 
 ### Новые возможности
 
