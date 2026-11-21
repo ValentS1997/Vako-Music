@@ -119,7 +119,6 @@ import android.os.SystemClock
 import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeUnit
-import java.util.concurrent.RejectedExecutionException
 import kotlin.math.cos
 import kotlin.math.sin
 import kotlin.math.sqrt
@@ -131,13 +130,10 @@ class MainActivity : ComponentActivity() {
     private val backgroundExecutor = ThreadPoolExecutor(
         3, 3, 0L, TimeUnit.MILLISECONDS, ArrayBlockingQueue(24)
     )
+    private val backgroundRunner = BackgroundTaskRunner(backgroundExecutor)
 
-    private fun backgroundTask(block: () -> Unit) {
-        try {
-            backgroundExecutor.execute {
-                if (!Thread.currentThread().isInterrupted) block()
-            }
-        } catch (_: RejectedExecutionException) {
+    private fun backgroundTask(onRejected: () -> Unit = {}, block: () -> Unit) {
+        if (!backgroundRunner.submit(onRejected, block)) {
             status = "Слишком много фоновых задач. Подождите завершения текущих."
         }
     }
@@ -536,7 +532,7 @@ class MainActivity : ComponentActivity() {
             return
         }
         scanning = true
-        backgroundTask {
+        backgroundTask(onRejected = { scanning = false }) {
             val result = runCatching { libraryStore.songs() }
             postIfActive {
                 scanning = false
@@ -599,7 +595,7 @@ class MainActivity : ComponentActivity() {
         if (token.isBlank()) { status = "Сначала подключите аккаунт в настройках"; activeTab = 3; return }
         busy = true
         status = "Ищем…"
-        backgroundTask {
+        backgroundTask(onRejected = { busy = false }) {
             try {
                 val found = MusicRepository.searchTracks(q, token)
                 val foundArtists = MusicRepository.searchArtists(q, token)
@@ -621,7 +617,7 @@ class MainActivity : ComponentActivity() {
         if (selectedArtist.isBlank()) searchResultsBeforeArtist = results
         busy = true
         status = "Открываем: ${artist.name}"
-        backgroundTask {
+        backgroundTask(onRejected = { busy = false }) {
             try {
                 val tracks = MusicRepository.artistTracks(artist.id, token)
                 postIfActive {
@@ -643,7 +639,7 @@ class MainActivity : ComponentActivity() {
         if (token.isBlank()) { status = "Сначала подключите аккаунт в настройках"; activeTab = 3; return }
         busy = true
         status = "Открываем подборку…"
-        backgroundTask {
+        backgroundTask(onRejected = { busy = false }) {
             try {
                 val tracks = MusicRepository.playlistFromUrl(link, token)
                 postIfActive { playlist = tracks; status = "Открыто треков: ${tracks.size}"; busy = false }
@@ -657,7 +653,7 @@ class MainActivity : ComponentActivity() {
         if (token.isBlank()) { status = "Сначала подключите аккаунт в настройках"; return }
         busy = true
         status = "Загружаем плейлисты…"
-        backgroundTask {
+        backgroundTask(onRejected = { busy = false }) {
             try {
                 val items = MusicRepository.ownPlaylists(token)
                 postIfActive { ownPlaylists = items; busy = false; status = "Плейлистов: ${items.size}" }
@@ -674,7 +670,7 @@ class MainActivity : ComponentActivity() {
         renameInput = item.title
         busy = true
         status = "Загружаем ${item.title}…"
-        backgroundTask {
+        backgroundTask(onRejected = { busy = false }) {
             try {
                 val tracks = MusicRepository.playlistTracks(item, token)
                 postIfActive { remotePlaylistTracks = tracks; busy = false; status = "Треков: ${tracks.size}" }
@@ -693,7 +689,7 @@ class MainActivity : ComponentActivity() {
         if (autoCollections.any { it.name.equals(name, true) }) { status = "Такое название уже есть"; return }
         autoCollectionBusy = true
         status = "Подбираем музыку…"
-        backgroundTask {
+        backgroundTask(onRejected = { autoCollectionBusy = false }) {
             try {
                 val tracks = recommendedTracks()
                 autoCollectionStore.save(name, tracks)
@@ -719,7 +715,7 @@ class MainActivity : ComponentActivity() {
         if (autoCollectionBusy) return
         autoCollectionBusy = true
         status = "Обновляем подборку…"
-        backgroundTask {
+        backgroundTask(onRejected = { autoCollectionBusy = false }) {
             try {
                 val tracks = recommendedTracks()
                 autoCollectionStore.replace(collection.name, tracks)
@@ -739,7 +735,7 @@ class MainActivity : ComponentActivity() {
         if (autoCollectionBusy || token.isBlank()) return
         autoCollectionBusy = true
         status = "Создаём копию в Яндекс Музыке…"
-        backgroundTask {
+        backgroundTask(onRejected = { autoCollectionBusy = false }) {
             try {
                 val playlist = MusicRepository.createPlaylist(collection.name, collection.tracks, token)
                 postIfActive {
@@ -766,7 +762,7 @@ class MainActivity : ComponentActivity() {
         if (likedLoading) return
         likedLoading = true
         likedProgress = "Загружаем «Мне нравится»…"
-        backgroundTask {
+        backgroundTask(onRejected = { likedLoading = false }) {
             try {
                 val tracks = MusicRepository.likedTracks(token) { done, total ->
                     postIfActive { likedProgress = "Загружаем «Мне нравится»: $done/$total" }
@@ -791,7 +787,7 @@ class MainActivity : ComponentActivity() {
         val name = renameInput.trim()
         if (name.isBlank() || name == item.title) return
         busy = true
-        backgroundTask {
+        backgroundTask(onRejected = { busy = false }) {
             try {
                 MusicRepository.renamePlaylist(item, name, token)
                 postIfActive {
@@ -811,7 +807,7 @@ class MainActivity : ComponentActivity() {
         if (busy || token.isBlank()) return
         busy = true
         status = "Удаляем «${item.title}»…"
-        backgroundTask {
+        backgroundTask(onRejected = { busy = false }) {
             try {
                 MusicRepository.deletePlaylist(item, token)
                 postIfActive {
@@ -832,7 +828,7 @@ class MainActivity : ComponentActivity() {
     private fun removeOwnTrack(position: Int) {
         val item = selectedRemotePlaylist ?: return
         busy = true
-        backgroundTask {
+        backgroundTask(onRejected = { busy = false }) {
             try {
                 MusicRepository.removePlaylistTrack(item, position, token)
                 val tracks = MusicRepository.playlistTracks(item, token)
@@ -850,7 +846,7 @@ class MainActivity : ComponentActivity() {
     private fun addOwnTracks(item: MusicRepository.UserPlaylist, tracks: List<Track>) {
         if (tracks.isEmpty()) return
         busy = true
-        backgroundTask {
+        backgroundTask(onRejected = { busy = false }) {
             try {
                 MusicRepository.addPlaylistTracks(item, tracks, token)
                 val updated = if (selectedRemotePlaylist?.kind == item.kind) MusicRepository.playlistTracks(item, token) else null
@@ -969,7 +965,7 @@ class MainActivity : ComponentActivity() {
         if (busy || bulkDownloading) return
         busy = true
         status = "Загружаем треки «${item.title}»…"
-        backgroundTask {
+        backgroundTask(onRejected = { busy = false }) {
             try {
                 val tracks = MusicRepository.playlistTracks(item, token)
                 postIfActive {
@@ -990,7 +986,7 @@ class MainActivity : ComponentActivity() {
         bulkDone = 0
         bulkTotal = tracks.size
         status = "Скачиваем «$title»: 0/${tracks.size}"
-        backgroundTask {
+        backgroundTask(onRejected = { bulkDownloading = false }) {
             var failed = 0
             val downloader = Downloader(this)
             for ((index, track) in tracks.withIndex()) {
@@ -1329,7 +1325,7 @@ class MainActivity : ComponentActivity() {
         downloading = true
         progress = 0f
         status = "Скачиваем: ${track.title}"
-        backgroundTask {
+        backgroundTask(onRejected = { downloading = false }) {
             try {
                 val result = Downloader(this).downloadTrack(
                     track, token, downloadQuality, wantNativeFlac = true, wantLyrics = false
