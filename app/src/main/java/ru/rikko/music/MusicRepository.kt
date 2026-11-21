@@ -115,11 +115,14 @@ object MusicRepository {
         Http.postString("$API/users/$uid/playlists/${item.kind}/delete", "", token)
     }
 
-    fun removePlaylistTrack(item: UserPlaylist, position: Int, token: String) {
+    fun removePlaylistTrack(item: UserPlaylist, position: Int, displayed: List<Track>, token: String) {
         val current = result(Http.getString("$API/users/${item.owner}/playlists/${item.kind}", token))
         val revision = current.optInt("revision", -1)
         if (revision < 0) throw IllegalStateException("Не получена версия плейлиста")
-        val diff = JSONArray().put(JSONObject().put("op", "delete").put("from", position).put("to", position + 1))
+        val raw = current.optJSONArray("tracks")
+            ?: throw IllegalStateException("Не удалось проверить состав плейлиста")
+        val checkedPosition = PlaylistRemovalGuard.positionIfUnchanged(displayed, raw, position)
+        val diff = JSONArray().put(JSONObject().put("op", "delete").put("from", checkedPosition).put("to", checkedPosition + 1))
         val body = "kind=${URLEncoder.encode(item.kind, "UTF-8")}&revision=$revision&diff=${URLEncoder.encode(diff.toString(), "UTF-8")}"
         Http.postString("$API/users/${item.owner}/playlists/${item.kind}/change", body, token)
     }

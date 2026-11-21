@@ -831,14 +831,21 @@ class MainActivity : ComponentActivity() {
 
     private fun removeOwnTrack(position: Int) {
         val item = selectedRemotePlaylist ?: return
+        if (busy) return
+        val displayed = remotePlaylistTracks.toList()
         busy = true
         backgroundTask {
             try {
-                MusicRepository.removePlaylistTrack(item, position, token)
+                MusicRepository.removePlaylistTrack(item, position, displayed, token)
                 val tracks = MusicRepository.playlistTracks(item, token)
                 postIfActive { remotePlaylistTracks = tracks; busy = false; status = "Трек удалён из Яндекс Музыки" }
             } catch (e: Exception) {
-                postIfActive { busy = false; status = "Не удалось удалить трек: ${e.message ?: "ошибка"}" }
+                val fresh = runCatching { MusicRepository.playlistTracks(item, token) }.getOrNull()
+                postIfActive {
+                    if (fresh != null) remotePlaylistTracks = fresh
+                    busy = false
+                    status = "Не удалось удалить трек: ${e.message ?: "ошибка"}"
+                }
             }
         }
     }
@@ -3260,7 +3267,9 @@ class MainActivity : ComponentActivity() {
             if (source != null) DropdownMenuItem(text = { Text("Убрать из «${source.title}»") }, onClick = {
                 open = false
                 val index = remotePlaylistTracks.indexOfFirst { trackKey(it) == trackKey(track) }
-                if (selectedRemotePlaylist?.kind == source.kind && index >= 0) removeOwnTrack(index)
+                if (selectedRemotePlaylist?.kind == source.kind && index >= 0 &&
+                    remotePlaylistTracks.count { trackKey(it) == trackKey(track) } == 1) removeOwnTrack(index)
+                else if (index >= 0) status = "Для повтора трека выберите конкретную строку в плейлисте"
                 else status = "Откройте плейлист для удаления трека"
             }, enabled = !busy)
         }
