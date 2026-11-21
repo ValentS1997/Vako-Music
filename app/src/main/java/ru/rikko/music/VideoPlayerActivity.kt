@@ -32,6 +32,7 @@ import java.lang.ref.WeakReference
 import androidx.activity.ComponentActivity
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.media3.common.MediaItem
+import androidx.media3.common.AudioAttributes as Media3AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.MimeTypes
 import androidx.media3.common.PlaybackException
@@ -131,6 +132,13 @@ class VideoPlayerActivity : ComponentActivity() {
         window.statusBarColor = Color.BLACK
         window.navigationBarColor = Color.BLACK
         player = ExoPlayer.Builder(this).build()
+        player.setAudioAttributes(
+            Media3AudioAttributes.Builder()
+                .setUsage(C.USAGE_MEDIA)
+                .setContentType(C.AUDIO_CONTENT_TYPE_MOVIE)
+                .build(),
+            true,
+        )
         player.setSeekParameters(SeekParameters.EXACT)
         showGestureLevels = preferences.getBoolean("show_gesture_levels", true)
         player.volume = preferences.getFloat("app_volume", 1f).coerceIn(0f, 1f)
