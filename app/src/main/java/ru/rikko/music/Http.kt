@@ -10,6 +10,17 @@ import java.net.URL
 object Http {
 
     private const val UA = "Mozilla/5.0 (Linux; Android 10) MusicDownloader/1.0"
+    internal var connectionFactory: (URL) -> HttpURLConnection = { it.openConnection() as HttpURLConnection }
+
+    internal fun checkedMediaUrl(value: String): URL {
+        val parsed = URL(value)
+        if (!parsed.protocol.equals("https", ignoreCase = true))
+            throw IOException("Для загрузки медиа требуется HTTPS")
+        return parsed
+    }
+
+    internal fun mediaRedirect(current: String, location: String): String =
+        checkedMediaUrl(URL(checkedMediaUrl(current), location).toString()).toString()
 
     /** Потоковая загрузка аудио в закрытый временный файл приложения. */
     fun downloadToFile(
@@ -18,7 +29,7 @@ object Http {
         onProgress: ((Long, Long) -> Unit)? = null,
         maxBytes: Long = 512L * 1024 * 1024,
     ) {
-        var current = url
+        var current = checkedMediaUrl(url).toString()
         repeat(6) {
             val connection = open(current, null)
             connection.instanceFollowRedirects = false
@@ -27,7 +38,7 @@ object Http {
                 if (code in 300..399) {
                     val location = connection.getHeaderField("Location")
                         ?: throw IOException("Перенаправление без адреса")
-                    current = URL(URL(current), location).toString()
+                    current = mediaRedirect(current, location)
                 } else {
                     if (code != HttpURLConnection.HTTP_OK) throw HttpError(code, "")
                     val total = connection.contentLengthLong
@@ -58,7 +69,7 @@ object Http {
     }
 
     private fun open(url: String, token: String?, method: String = "GET"): HttpURLConnection {
-        val c = URL(url).openConnection() as HttpURLConnection
+        val c = connectionFactory(URL(url))
         c.requestMethod = method
         c.connectTimeout = 30_000
         c.readTimeout = 120_000
@@ -108,21 +119,27 @@ object Http {
         maxBytes: Int = 96 * 1024 * 1024,
     ): ByteArray {
         require(maxBytes > 0)
-        var current = url
+        var current = checkedMediaUrl(url).toString()
         var hops = 0
+        lateinit var c: HttpURLConnection
         while (true) {
             val probe = open(current, null)
             probe.instanceFollowRedirects = false
-            val code = probe.responseCode
-            if (code !in 300..399) { probe.disconnect(); break }
-            val location = probe.getHeaderField("Location")
+            val location = try {
+                val code = probe.responseCode
+                if (code !in 300..399) null
+                else probe.getHeaderField("Location")
+                    ?: throw IOException("Перенаправление без адреса")
+            } catch (e: Exception) {
+                probe.disconnect()
+                throw e
+            }
+            if (location == null) { c = probe; break }
             probe.disconnect()
-            if (location.isNullOrBlank()) break
-            current = java.net.URL(java.net.URL(current), location).toString()
-            if (++hops > 5) throw Exception("Слишком много перенаправлений при скачивании")
+            if (++hops > 5) throw IOException("Слишком много перенаправлений при скачивании")
+            current = mediaRedirect(current, location)
         }
 
-        val c = open(current, null)
         try {
             val code = c.responseCode
             if (code != HttpURLConnection.HTTP_OK) throw HttpError(code, "")
