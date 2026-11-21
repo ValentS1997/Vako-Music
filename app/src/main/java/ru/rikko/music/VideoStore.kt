@@ -14,7 +14,8 @@ data class LocalVideo(
     val sizeBytes: Long,
     val addedSeconds: Long,
     val width: Int,
-    val height: Int
+    val height: Int,
+    val modifiedSeconds: Long = 0
 )
 
 object VideoStore {
@@ -24,7 +25,7 @@ object VideoStore {
             MediaStore.Video.Media.RELATIVE_PATH, MediaStore.Video.Media.VOLUME_NAME,
             MediaStore.Video.Media.DURATION, MediaStore.Video.Media.SIZE,
             MediaStore.Video.Media.DATE_ADDED, MediaStore.Video.Media.WIDTH,
-            MediaStore.Video.Media.HEIGHT
+            MediaStore.Video.Media.HEIGHT, MediaStore.Video.Media.DATE_MODIFIED
         )
         val videos = mutableListOf<LocalVideo>()
         context.contentResolver.query(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, columns, null, null, null)?.use { cursor ->
@@ -35,7 +36,7 @@ object VideoStore {
                 fun int(i: Int) = if (cursor.isNull(indices[i])) 0 else cursor.getInt(indices[i])
                 videos += LocalVideo(
                     ContentUris.withAppendedId(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, long(0)),
-                    string(1), string(3), string(2).trim('/'), long(4), long(5), long(6), int(7), int(8)
+                    string(1), string(3), string(2).trim('/'), long(4), long(5), long(6), int(7), int(8), long(9)
                 )
             }
         }

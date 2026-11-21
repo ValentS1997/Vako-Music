@@ -18,6 +18,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -25,6 +26,8 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.AlertDialog
@@ -47,6 +50,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -89,6 +94,8 @@ object VideoModule {
         var selectedUris by remember { mutableStateOf<Set<String>>(emptySet()) }
         var sort by remember { mutableStateOf(1) }
         var sortMenu by remember { mutableStateOf(false) }
+        var viewMode by remember { mutableStateOf(navPrefs.getInt("view_mode", 1).coerceIn(0, 2)) }
+        var viewMenu by remember { mutableStateOf(false) }
         var refresh by remember { mutableStateOf(0) }
         DisposableEffect(lifecycleOwner) {
             val observer = LifecycleEventObserver { _, event ->
@@ -355,11 +362,22 @@ object VideoModule {
                 TextButton(onClick = openSettings) { Text("Настроить разделы") }
                 return@Column
             }
-            Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                listOf("Папки", "Все", "Плейлисты", "Недавние", "Избранное", "Закладки").forEachIndexed { index, label ->
-                    VakoChip(label, tab == index) { tab = index; selectedUris = emptySet() }
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                Row(Modifier.weight(1f).horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    listOf("Папки", "Все", "Плейлисты", "Недавние", "Избранное", "Закладки").forEachIndexed { index, label ->
+                        VakoChip(label, tab == index) { tab = index; selectedUris = emptySet() }
+                    }
                 }
-                Spacer(Modifier.weight(1f))
+                if (tab != 5) {
+                    VideoAction("▦", "Вид видео", { viewMenu = true })
+                    DropdownMenu(expanded = viewMenu, onDismissRequest = { viewMenu = false }) {
+                        listOf("Список", "Крупная сетка", "Компактная сетка").forEachIndexed { index, label ->
+                            DropdownMenuItem(text = { Text(label) }, onClick = {
+                                viewMode = index; navPrefs.edit().putInt("view_mode", index).apply(); viewMenu = false
+                            })
+                        }
+                    }
+                }
                 if (tab == 2) TextButton(onClick = { newPlaylistItems = emptyList(); inputKind = "create_playlist"; inputText = "" }) { Text("+") }
                 else if (tab == 3) TextButton(onClick = { inputKind = "clear_history" }) { Text("Очистить") }
                 else {
@@ -372,7 +390,8 @@ object VideoModule {
                 }
             }
             if (selectedUris.isNotEmpty()) {
-                Row(horizontalArrangement = Arrangement.spacedBy(3.dp)) {
+                Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(3.dp)) {
                     TextButton(onClick = { selectedUris = emptySet() }) { Text("${selectedUris.size} ×") }
                     TextButton(onClick = { playlistPicker = selectedVideos }) { Text("В плейлист") }
                     TextButton(onClick = { target = VideoDestination("move", selectedVideos) }) { Text("Перенести") }
@@ -420,6 +439,10 @@ object VideoModule {
             if (tab == 3 && history.isEmpty()) Text("История просмотра пока пуста.", color = MaterialTheme.colorScheme.onSurfaceVariant)
             if (tab == 4 && favoriteUris.isEmpty()) Text("Избранных видео пока нет.", color = MaterialTheme.colorScheme.onSurfaceVariant)
             if (tab == 5 && bookmarks.isEmpty()) Text("Закладок пока нет. Добавьте фрагмент из меню видеоплеера.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            val videoColumns = if (viewMode == 2 && LocalConfiguration.current.screenWidthDp >= 350) 3 else 2
+            val videoGroups = remember(visibleVideos, viewMode, videoColumns) {
+                if (viewMode == 0) visibleVideos.map(::listOf) else visibleVideos.chunked(videoColumns)
+            }
             LazyColumn(Modifier.weight(1f)) {
                 if (tab == 5) {
                     items(bookmarks, key = { "${it.uri}:${it.positionMs}" }) { mark ->
@@ -452,7 +475,9 @@ object VideoModule {
                                 "Удалить видео в папке" to { delete(folderVideos(volume, path)) }
                             ))
                     }
-                    items(visibleVideos, key = { it.uri.toString() }) { video ->
+                    items(videoGroups, key = { "video:${it.first().uri}" }) { group ->
+                      Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                       group.forEach { video ->
                         val uri = video.uri.toString()
                         val saved = history.firstOrNull { it.uri == uri }?.positionMs
                             ?: context.getSharedPreferences("vako_video", 0).getLong(uri, 0)
@@ -462,6 +487,9 @@ object VideoModule {
                             if (saved > 10_000) append(" · Продолжить ${VideoStore.formatDuration(saved)}")
                         }
                         VideoRow(video.name, details,
+                            thumbnailUri = video.uri, grid = viewMode != 0,
+                            thumbnailVersion = "${video.sizeBytes}:${video.modifiedSeconds}",
+                            modifier = if (viewMode == 0) Modifier.fillMaxWidth() else Modifier.weight(1f),
                             checked = uri in selectedUris,
                             onClick = { if (selectedUris.isNotEmpty()) selectedUris = if (uri in selectedUris) selectedUris - uri else selectedUris + uri else if (tab == 3) openRecent(history.first { it.uri == uri }) else open(video, selectedPlaylist, visibleVideos) },
                             onLongClick = { selectedUris = selectedUris + uri },
@@ -485,6 +513,9 @@ object VideoModule {
                                 add("Сведения" to { detail = video })
                                 add("Удалить" to { delete(listOf(video)) })
                             })
+                       }
+                       if (viewMode != 0) repeat(videoColumns - group.size) { Spacer(Modifier.weight(1f)) }
+                      }
                     }
                 }
             }
@@ -573,21 +604,44 @@ object VideoModule {
     @OptIn(ExperimentalFoundationApi::class)
     @Composable
     private fun VideoRow(title: String, details: String, onClick: () -> Unit, onLongClick: (() -> Unit)? = null,
-                         checked: Boolean = false, menu: List<Pair<String, () -> Unit>> = emptyList()) {
+                         checked: Boolean = false, menu: List<Pair<String, () -> Unit>> = emptyList(),
+                         thumbnailUri: Uri? = null, thumbnailVersion: String = "", grid: Boolean = false, modifier: Modifier = Modifier) {
         var open by remember { mutableStateOf(false) }
-        Row(Modifier.fillMaxWidth().padding(vertical = 3.dp).vakoPanel(active = checked, shape = VakoUi.row)
-            .padding(horizontal = 10.dp), horizontalArrangement = Arrangement.SpaceBetween) {
-            Column(Modifier.weight(1f).combinedClickable(onClick = onClick, onLongClick = onLongClick ?: { open = true }).padding(vertical = 10.dp)) {
-                Text(if (checked) "✓ $title" else title, maxLines = 1, overflow = TextOverflow.Ellipsis,
-                    fontWeight = FontWeight.SemiBold, color = if (checked) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface)
-                Text(details, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
-            if (menu.isNotEmpty()) {
-                VideoAction("⋮", "Действия с $title", { open = true })
-                DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
-                    menu.forEach { (label, action) -> DropdownMenuItem(text = { Text(label) }, onClick = { open = false; action() }) }
+        if (grid && thumbnailUri != null) {
+            Column(modifier.padding(vertical = 3.dp).vakoPanel(active = checked, shape = VakoUi.row)) {
+                Box {
+                    VideoThumbnails.Artwork(thumbnailUri, 320, 180, thumbnailVersion,
+                        Modifier.fillMaxWidth().aspectRatio(16f / 9f).clip(VakoUi.row)
+                            .combinedClickable(onClick = onClick, onLongClick = onLongClick ?: { open = true }))
+                    if (menu.isNotEmpty()) Box(Modifier.align(Alignment.TopEnd).background(MaterialTheme.colorScheme.surface.copy(alpha = 0.78f))) {
+                        VideoAction("⋮", "Действия с $title", { open = true })
+                    }
+                }
+                Column(Modifier.fillMaxWidth().combinedClickable(onClick = onClick,
+                    onLongClick = onLongClick ?: { open = true }).padding(horizontal = 8.dp, vertical = 4.dp)) {
+                    Text(if (checked) "✓ $title" else title, maxLines = 2, overflow = TextOverflow.Ellipsis,
+                        fontWeight = FontWeight.SemiBold, color = if (checked) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface)
+                    Text(details, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                        style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
+        } else {
+            Row(modifier.fillMaxWidth().padding(vertical = 3.dp).vakoPanel(active = checked, shape = VakoUi.row)
+                .padding(horizontal = 10.dp), horizontalArrangement = Arrangement.SpaceBetween) {
+                if (thumbnailUri != null) VideoThumbnails.Artwork(thumbnailUri, 160, 90, thumbnailVersion,
+                    Modifier.width(80.dp).height(48.dp).clip(VakoUi.row)
+                        .combinedClickable(onClick = onClick, onLongClick = onLongClick ?: { open = true }))
+                Column(Modifier.weight(1f).combinedClickable(onClick = onClick, onLongClick = onLongClick ?: { open = true }).padding(vertical = 10.dp, horizontal = 6.dp)) {
+                    Text(if (checked) "✓ $title" else title, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                        fontWeight = FontWeight.SemiBold, color = if (checked) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface)
+                    Text(details, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                        style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                if (menu.isNotEmpty()) VideoAction("⋮", "Действия с $title", { open = true })
+            }
+        }
+        DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+            menu.forEach { (label, action) -> DropdownMenuItem(text = { Text(label) }, onClick = { open = false; action() }) }
         }
     }
 
